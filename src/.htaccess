@@ -1,0 +1,17 @@
+# src/.htaccess
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # ຖ້າໄຟລ໌ ຫຼື ໂຟນເດີມີຢູ່ແທ້, ໃຊ້ໂດຍກົງ
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    
+    # ສົ່ງທຸກຄຳຮ້ອງຂໍໄປທີ່ index.php
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
+
+# ປ້ອງກັນການເຂົ້າເຖິງໄຟລ໌ທີ່ອ່ອນໄຫວ
+<FilesMatch "\.(env|json|config|log)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>

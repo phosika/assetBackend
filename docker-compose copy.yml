@@ -1,0 +1,70 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # Web server (Apache + PHP)
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    volumes:
+      # ໃຊ້ volume ເພື່ອ sync ການປ່ຽນແປງໂຄ້ດແບບ real-time
+      - ./src:/var/www/html
+      - uploads_data:/var/www/html/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DB_HOST=db
+      - DB_NAME=asset_db
+      - DB_USER=root
+      - DB_PASSWORD=My_root_passw0rd@!2o26
+    networks:
+      - api-network
+
+  # MySQL Database
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=My_root_passw0rd@!2o26
+      - MYSQL_DATABASE=asset_db
+      - MYSQL_USER=api_user
+      - MYSQL_PASSWORD=My_root_passw0rd@!2o26
+    volumes:
+      # ໃຊ້ volume ເພື່ອເກັບຂໍ້ມູນຖາວອນ
+      - db_data:/var/lib/mysql
+      # ສຳລັບ import ຂໍ້ມູນເບື້ອງຕົ້ນ (ຖ້າມີ)
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - api-network
+
+  # phpMyAdmin (optional - ສຳລັບຈັດການ database ຜ່ານ browser)
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "8081:80"
+    environment:
+      - PMA_HOST=db
+      - PMA_USER=root
+      - PMA_PASSWORD=My_root_passw0rd@!2o26
+    depends_on:
+      - db
+    networks:
+      - api-network
+
+# ປະກາດ volumes ແລະ networks
+volumes:
+  db_data:
+
+networks:
+  api-network:
+    driver: bridge

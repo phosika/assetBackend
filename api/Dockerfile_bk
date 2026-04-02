@@ -1,0 +1,5 @@
+FROM php:8.2-apache
+# ຕິດຕັ້ງ PDO MySQL ສໍາລັບເຊື່ອມຕໍ່ຖານຂໍ້ມູນ
+RUN docker-php-ext-install pdo pdo_mysql
+# ເປີດການໃຊ້ງານ mod_rewrite ຂອງ Apache (ສໍາລັບເຮັດ REST API)
+RUN a2enmod rewrite

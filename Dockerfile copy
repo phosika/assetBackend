@@ -1,0 +1,18 @@
+# Dockerfile
+FROM php:8.2-apache
+
+# ຕິດຕັ້ງ PHP extensions ທີ່ຈຳເປັນ
+RUN docker-php-ext-install pdo pdo_mysql
+
+# ເປີດໃຊ້ mod_rewrite ສຳລັບ Apache (ຈຳເປັນສຳລັບ API routing)
+RUN a2enmod rewrite
+
+# ຕັ້ງຄ່າ working directory
+WORKDIR /var/www/html
+
+# ຄັດລອກ source code ເຂົ້າໄປໃນ container
+COPY ./src /var/www/html/
+
+# ຕັ້ງຄ່າ permission
+RUN chown -R www-data:www-data /var/www/html \
+    && chmod -R 755 /var/www/html

@@ -1,0 +1,14 @@
+# ປ້ອງກັນການເບິ່ງລາຍການໄຟລ໌
+Options -Indexes
+
+# ອະນຸຍາດໃຫ້ເຂົ້າເຖິງໄຟລ໌ປະເພດຕ່າງໆ
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|pdf|doc|docx|xls|xlsx|csv|txt)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# ປ້ອງກັນການເຂົ້າເຖິງໄຟລ໌ PHP
+<FilesMatch "\.(php|php3|php4|php5|phtml)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>

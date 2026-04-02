@@ -1,0 +1,22 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # ຖ້າ request ໄປທີ່ src/uploads, ໃຊ້ໂດຍກົງ
+    RewriteCond %{REQUEST_URI} ^/src/uploads/ [NC]
+    RewriteRule ^ - [L]
+    
+    # ຖ້າ file ຫຼື folder ມີຢູ່ແລ້ວ, ໃຊ້ໂດຍກົງ
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^ - [L]
+    
+    # ສົ່ງທຸກ request ໄປຍັງ src/index.php
+    RewriteRule ^(.*)$ src/index.php [QSA,L]
+</IfModule>
+
+# ຕັ້ງຄ່າ PHP (ຖ້າຈຳເປັນ)
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 20M
+    php_value post_max_size 20M
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>

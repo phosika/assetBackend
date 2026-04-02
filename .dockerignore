@@ -1,0 +1,20 @@
+# .dockerignore
+.git
+.gitignore
+README.md
+docker-compose.yml
+.dockerignore
+node_modules
+vendor
+.env
+.gitlab-ci.yml
+.github
+.gitattributes
+Dockerfile
+.docker
+*.log
+*.sql
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
