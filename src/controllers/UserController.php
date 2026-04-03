@@ -167,7 +167,7 @@ class UserController {
     // ໃນ UserController.php, method getAllUsers()
     public function getAllUsers() {
         try {
-            $userId = AuthMiddleware::authenticate(['super-admin', 'asset-admin']);
+            $userId = AuthMiddleware::authenticate(['super_admin', 'asset_admin']);
             $currentUser = $this->userModel->getById($userId);
 
             // ຮັບພາຣາມິເຕີຈາກ query string
@@ -243,7 +243,7 @@ class UserController {
      */
     public function exportUsers() {
         try {
-            $userId = AuthMiddleware::authenticate(['admin', 'manager']);
+            $userId = AuthMiddleware::authenticate(['super_admin', 'department_head']);
             $currentUser = $this->userModel->getById($userId);
 
             $filters = [];
@@ -346,7 +346,7 @@ class UserController {
      */
     public function getUserById($id) {
         try {
-            $userId = AuthMiddleware::authenticate(['admin', 'manager']);
+            $userId = AuthMiddleware::authenticate(['super_admin', 'department_head', 'manager']);
             $currentUser = $this->userModel->getById($userId);
 
             $user = $this->userModel->getUserWithFullDepartment($id);

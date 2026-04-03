@@ -169,7 +169,7 @@ class UserController {
      */
     public function getAllUsers() {
         try {
-            $userId = AuthMiddleware::authenticate(['admin', 'manager']);
+            $userId = AuthMiddleware::authenticate(['super_admin', 'department_head']);
             $currentUser = $this->userModel->getById($userId);
 
             // ຮັບພາຣາມິເຕີຈາກ query string
