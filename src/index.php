@@ -4,6 +4,18 @@
 // ຕ້ອງແນ່ໃຈວ່າບໍ່ມີ output ກ່ອນ headers
 ob_start();
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// ສ້າງ session ທົດສອບສຳລັບ development (ຖ້າບໍ່ມີ user ເຂົ້າສູ່ລະບົບ)
+if (!isset($_SESSION['user_id']) && !isset($_SESSION['user'])) {
+    // ນີ້ສຳລັບການທົດສອບເທົ່ານັ້ນ
+    $_SESSION['user_id'] = 1;
+    $_SESSION['user'] = ['id' => 1, 'name' => 'Admin', 'email' => 'admin@example.com'];
+    error_log("Development session created for testing");
+}
+
 // ຕັ້ງ CORS headers
 header('Access-Control-Allow-Origin: http://localhost:5173');
 header('Content-Type: application/json; charset=UTF-8');
@@ -46,6 +58,8 @@ require_once $basePath . '/controllers/ExchangeRateController.php';
 require_once $basePath . '/controllers/DashboardController.php';
 require_once $basePath . '/controllers/StockCountController.php';
 require_once $basePath . '/controllers/StockAdjustmentController.php';
+require_once $basePath . '/controllers/AssetSyncController.php';
+require_once $basePath . '/controllers/RoleController.php';
 
 // Models
 require_once $basePath . '/models/User.php';
@@ -397,8 +411,14 @@ try {
         // ==================== INVENTORY ITEMS ROUTES ====================
         case 'inventory-items':
             $itemController = new InventoryItemController();
-            
-            if ($method === 'GET' && $action === '' && $id === '') {
+
+            $action = $segments[1] ?? '';
+            $id = $segments[2] ?? '';
+
+            if ($method === 'GET' && $action === 'latest-code') {
+                $itemController->getLatestCode();
+            }
+            elseif ($method === 'GET' && $action === '' && $id === '') {
                 $itemController->getAllItems();
             } elseif ($method === 'GET' && $action === 'dropdown') {
                 $itemController->getItemsDropdown();
@@ -428,7 +448,7 @@ try {
                 $itemController->deleteItem($action);
             } elseif ($method === 'DELETE' && !empty($action) && is_numeric($action) && $id === 'hard') {
                 $itemController->hardDeleteItem($action);
-            } else {
+            }else {
                 Response::notFound('Inventory items endpoint not found');
             }
             break;
@@ -452,7 +472,12 @@ try {
                     } else {
                         $stockController->getStockCounts();
                     }
-                } elseif ($method === 'GET' && $thirdSegment === 'by-item' && !empty($fourthSegment)) {
+                } 
+                        // GET /inventory/stock/counts - ດຶງປະຫວັດການນັບ
+                elseif ($method === 'GET' && $thirdSegment === 'counts') {
+                    $stockController->getStockCounts();
+                }
+                elseif ($method === 'GET' && $thirdSegment === 'by-item' && !empty($fourthSegment)) {
                     $stockController->getStockByItem($fourthSegment);
                 } elseif ($method === 'GET' && !empty($thirdSegment) && is_numeric($thirdSegment)) {
                     $stockController->getStockById($thirdSegment);
@@ -660,9 +685,11 @@ try {
             }
             break;
 
+ 
         // ==================== ASSET SYNC ROUTES ====================
         case 'asset':
             if ($method === 'POST' && $action === 'sync-from-sales') {
+                require_once __DIR__ . '/controllers/AssetSyncController.php';
                 $assetSyncController = new AssetSyncController();
                 $assetSyncController->syncFromSales();
             } else {
@@ -709,33 +736,86 @@ try {
             }
             break;
 
+ 
         // ==================== STOCK COUNT ROUTES ====================
         case 'stock-counts':
             $stockCountController = new StockCountController();
+            // ແກ້ໄຂສ່ວນ parsing segments ຕອນຕົ້ນຂອງ index.php
+            $segments = explode('/', trim($path, '/'));
+            $resource = $segments[0] ?? '';
             $action = $segments[1] ?? '';
             $id = $segments[2] ?? '';
             $subAction = $segments[3] ?? '';
             $subSubAction = $segments[4] ?? '';
+
+            // ເພີ່ມ log ເພື່ອ debugging
+            error_log("=== ROUTE DEBUG ===");
+            error_log("Full path: " . $path);
+            error_log("Segments: " . json_encode($segments));
+            error_log("Resource: $resource, Action: $action, ID: $id, SubAction: $subAction");
+      
+            error_log("Stock count route - Method: $method, Action: $action, ID: $id, SubAction: $subAction");
+
+            error_log("Stock count route - Method: $method, Action: $action, ID: $id, SubAction: $subAction, SubSubAction: $subSubAction");
+
+
+                 // GET /stock-counts/{id}/items
+            if ($method === 'GET' && !empty($action) && is_numeric($action) && $id === 'items') {
+                error_log("Calling getStockCountItems with ID: " . $action);
+                $stockCountController->getStockCountItems($action);
+            }
             
-            if ($method === 'GET' && $action === '' && $id === '') {
+            // GET /stock-counts/{id}/items - ຕ້ອງມາກ່ອນ /stock-counts/{id}
+            if ($method === 'GET' && !empty($action) && is_numeric($action) && $id === 'items') {
+                error_log("✅ Matched: GET /stock-counts/{$action}/items");
+                $stockCountController->getStockCountItems($action);
+            }
+            // GET /stock-counts - ດຶງລາຍການການນັບທັງໝົດ
+            elseif ($method === 'GET' && $action === '' && $id === '') {
+                error_log("✅ Matched: GET /stock-counts");
                 $stockCountController->getStockCounts();
-            } elseif ($method === 'GET' && $action === 'stats') {
+            }
+            // GET /stock-counts/stats - ດຶງສະຖິຕິ
+            elseif ($method === 'GET' && $action === 'stats') {
+                error_log("✅ Matched: GET /stock-counts/stats");
                 $stockCountController->getStockCountStats();
-            } elseif ($method === 'POST' && $action === '' && $id === '') {
+            }
+            // GET /stock-counts/check-code - ກວດສອບລະຫັດຊ້ຳ
+            elseif ($method === 'GET' && $action === 'check-code') {
+                error_log("✅ Matched: GET /stock-counts/check-code");
+                $stockCountController->checkSessionCode();
+            }
+            // GET /stock-counts/{id} - ດຶງຂໍ້ມູນການນັບຕາມ ID
+            elseif ($method === 'GET' && !empty($action) && is_numeric($action) && $id === '') {
+                error_log("✅ Matched: GET /stock-counts/{$action}");
+                $stockCountController->getStockCountById($action);
+            }
+            // POST /stock-counts - ສ້າງການນັບໃໝ່
+            elseif ($method === 'POST' && $action === '' && $id === '') {
+                error_log("✅ Matched: POST /stock-counts");
                 $stockCountController->createStockCount();
-            } elseif ($method === 'GET' && !empty($action) && is_numeric($action) && $id === 'details') {
-                $stockCountController->getStockCountDetails($action);
-            } elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'start') {
+            }
+            // POST /stock-counts/{id}/start - ເລີ່ມການນັບ
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'start') {
+                error_log("✅ Matched: POST /stock-counts/{$action}/start");
                 $stockCountController->startStockCount($action);
-            } elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'complete') {
+            }
+            // POST /stock-counts/{id}/complete - ສຳເລັດການນັບ
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'complete') {
+                error_log("✅ Matched: POST /stock-counts/{$action}/complete");
                 $stockCountController->completeStockCount($action);
-            } elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'items' && $subAction === '') {
-                $stockCountController->addItemsToCount($action);
-            } elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'items' && !empty($subAction) && is_numeric($subAction) && $subSubAction === 'count') {
-                $stockCountController->recordCount($action, $subAction);
-            } elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'cancel') {
+            }
+            // POST /stock-counts/{id}/cancel - ຍົກເລີກການນັບ
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'cancel') {
+                error_log("✅ Matched: POST /stock-counts/{$action}/cancel");
                 $stockCountController->cancelStockCount($action);
-            } else {
+            }
+            // POST /stock-counts/{id}/count - ບັນທຶກການນັບ (ສະບັບງ່າຍ)
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'count') {
+                error_log("✅ Matched: POST /stock-counts/{$action}/count");
+                $stockCountController->recordSimpleCount($action);
+            }
+            else {
                 Response::notFound('Stock count endpoint not found');
             }
             break;
@@ -767,6 +847,65 @@ try {
                 Response::notFound('Test endpoint not found');
             }
             break;
+
+        // ==================== ROLES MANAGEMENT ROUTES ====================
+        case 'roles':
+            $roleController = new RoleController();
+            
+            // GET /api/roles - ດຶງຂໍ້ມູນບົດບາດທັງໝົດ
+            if ($method === 'GET' && $action === '' && $id === '') {
+                $roleController->getAll();
+            }
+            // GET /api/roles/dropdown - ດຶງຂໍ້ມູນບົດບາດສຳລັບ dropdown
+            elseif ($method === 'GET' && $action === 'dropdown') {
+                $roleController->getForDropdown();
+            }
+            // GET /api/roles/stats - ດຶງສະຖິຕິບົດບາດ
+            elseif ($method === 'GET' && $action === 'stats') {
+                $roleController->getStats();
+            }
+            // GET /api/roles/search - ຄົ້ນຫາບົດບາດ
+            elseif ($method === 'GET' && $action === 'search') {
+                $roleController->search();
+            }
+            // GET /api/roles/{id} - ດຶງຂໍ້ມູນບົດບາດຕາມ ID
+            elseif ($method === 'GET' && !empty($action) && is_numeric($action) && $id === '') {
+                $roleController->getById($action);
+            }
+            // GET /api/roles/{id}/permissions - ດຶງສິດທິຂອງບົດບາດ
+            elseif ($method === 'GET' && !empty($action) && is_numeric($action) && $id === 'permissions') {
+                $roleController->getPermissions($action);
+            }
+            // POST /api/roles - ສ້າງບົດບາດໃໝ່
+            elseif ($method === 'POST' && $action === '' && $id === '') {
+                $roleController->create();
+            }
+            // POST /api/roles/{id}/duplicate - ຄັດລອກບົດບາດ
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'duplicate') {
+                $roleController->duplicate($action);
+            }
+            // POST /api/roles/{id}/permissions - ບັນທຶກສິດທິຂອງບົດບາດ
+            elseif ($method === 'POST' && !empty($action) && is_numeric($action) && $id === 'permissions') {
+                $roleController->savePermissions($action);
+            }
+            // PUT /api/roles/{id} - ອັບເດດບົດບາດ
+            elseif ($method === 'PUT' && !empty($action) && is_numeric($action) && $id === '') {
+                $roleController->update($action);
+            }
+            // PATCH /api/roles/{id}/status - ປ່ຽນສະຖານະບົດບາດ
+            elseif ($method === 'PATCH' && !empty($action) && is_numeric($action) && $id === 'status') {
+                $roleController->updateStatus($action);
+            }
+            // DELETE /api/roles/{id} - ລຶບບົດບາດ
+            elseif ($method === 'DELETE' && !empty($action) && is_numeric($action) && $id === '') {
+                $roleController->delete($action);
+            }
+            else {
+                Response::notFound('Roles endpoint not found');
+            }
+            break;
+
+        
 
         // ==================== DEFAULT - API INFO ====================
         default:

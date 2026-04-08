@@ -1,11 +1,10 @@
 <?php
-// /home/phosika/Fixasset/assetapplication/BACKEND/src/models/InventoryStock.php
 
 require_once __DIR__ . '/../config/database.php';
 
 class InventoryStock {
     private $db;
-    private $table = 'inventory_stock';
+    private $table = 'inventory_stocks'; // ປ່ຽນຈາກ 'inventory_stock' ເປັນ 'inventory_stocks'
 
     public function __construct() {
         $this->db = Database::getInstance();
@@ -20,43 +19,49 @@ class InventoryStock {
      */
     public function getAllStock($filters = []) {
         try {
-            // ກວດສອບການເຊື່ອມຕໍ່
             if (!$this->db) {
                 throw new Exception("Database connection not available");
             }
 
-            // ສ້າງ SQL ພື້ນຖານ
-            $sql = "SELECT s.*,
-                           i.id as item_id,
-                           i.item_code,
-                           i.item_name,
-                           i.item_name_en,
-                           i.barcode,
-                           i.purchase_price,
-                           i.selling_price,
-                           i.reorder_point,
-                           i.minimum_stock,
-                           i.maximum_stock,
-                           i.is_active,
-                           c.category_name,
-                           sup.supplier_name,
-                           w.warehouse_name,
-                           w.id as warehouse_id,
-                           COALESCE(s.shelf_location, '') as shelf_location,
-                           COALESCE(s.last_count_date, NULL) as last_count_date,
-                           COALESCE(s.last_count_quantity, 0) as last_count_quantity
+            // ສ້າງ SQL ພື້ນຖານ - ໃຊ້ quantity ແທນ current_quantity
+            $sql = "SELECT 
+                        s.id,
+                        s.item_id,
+                        s.warehouse_id,
+                        s.quantity as current_quantity,
+                        s.reserved_quantity,
+                        (s.quantity - COALESCE(s.reserved_quantity, 0)) as available_quantity,
+                        s.location as shelf_location,
+                        s.batch_number,
+                        s.expiry_date,
+                        s.status,
+                        s.created_at,
+                        s.updated_at,
+                        i.item_code,
+                        i.item_name,
+                        i.item_name_en,
+                        i.barcode,
+                        i.purchase_price,
+                        i.selling_price,
+                        i.reorder_point,
+                        i.minimum_stock,
+                        i.maximum_stock,
+                        i.is_active,
+                        c.category_name,
+                        sup.supplier_name,
+                        w.warehouse_name
                     FROM {$this->table} s
                     INNER JOIN inventory_items i ON s.item_id = i.id
                     LEFT JOIN asset_categories c ON i.category_id = c.id
                     LEFT JOIN suppliers sup ON i.supplier_id = sup.id
                     LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                    WHERE 1=1";
+                    WHERE s.status = 'active'";
             
             $params = [];
             $countSql = "SELECT COUNT(*) as total 
                         FROM {$this->table} s 
                         INNER JOIN inventory_items i ON s.item_id = i.id
-                        WHERE 1=1";
+                        WHERE s.status = 'active'";
             $countParams = [];
 
             // ເພີ່ມເງື່ອນໄຂການຄົ້ນຫາ
@@ -91,18 +96,18 @@ class InventoryStock {
 
             // ເພີ່ມເງື່ອນໄຂສະຖານະສະຕ໋ອກ
             if (!empty($filters['low_stock']) && $filters['low_stock'] === true) {
-                $sql .= " AND i.reorder_point IS NOT NULL AND s.current_quantity <= i.reorder_point";
-                $countSql .= " AND i.reorder_point IS NOT NULL AND s.current_quantity <= i.reorder_point";
+                $sql .= " AND i.reorder_point IS NOT NULL AND s.quantity <= i.reorder_point AND s.quantity > 0";
+                $countSql .= " AND i.reorder_point IS NOT NULL AND s.quantity <= i.reorder_point AND s.quantity > 0";
             }
 
             if (!empty($filters['out_of_stock']) && $filters['out_of_stock'] === true) {
-                $sql .= " AND s.current_quantity <= 0";
-                $countSql .= " AND s.current_quantity <= 0";
+                $sql .= " AND s.quantity <= 0";
+                $countSql .= " AND s.quantity <= 0";
             }
 
             if (!empty($filters['overstock']) && $filters['overstock'] === true) {
-                $sql .= " AND i.maximum_stock IS NOT NULL AND s.current_quantity >= i.maximum_stock";
-                $countSql .= " AND i.maximum_stock IS NOT NULL AND s.current_quantity >= i.maximum_stock";
+                $sql .= " AND i.maximum_stock IS NOT NULL AND s.quantity >= i.maximum_stock";
+                $countSql .= " AND i.maximum_stock IS NOT NULL AND s.quantity >= i.maximum_stock";
             }
 
             // ນັບຈຳນວນທັງໝົດ
@@ -117,18 +122,16 @@ class InventoryStock {
             $total = $totalResult ? (int)$totalResult['total'] : 0;
 
             // ເພີ່ມການຈັດລຽງ
-            $sortBy = $filters['sort_by'] ?? 's.current_quantity';
+            $sortBy = $filters['sort_by'] ?? 's.quantity';
             $sortOrder = $filters['sort_order'] ?? 'DESC';
             
-            // ປ້ອງກັນ SQL injection ສຳລັບ sort
             $allowedSortColumns = [
-                's.current_quantity', 'i.item_code', 'i.item_name', 
-                's.reserved_quantity', 's.available_quantity', 
-                'i.purchase_price', 'i.selling_price'
+                's.quantity', 'i.item_code', 'i.item_name', 
+                's.reserved_quantity', 'i.purchase_price', 'i.selling_price'
             ];
             
             if (!in_array($sortBy, $allowedSortColumns)) {
-                $sortBy = 's.current_quantity';
+                $sortBy = 's.quantity';
             }
             
             $sortOrder = strtoupper($sortOrder) === 'ASC' ? 'ASC' : 'DESC';
@@ -146,17 +149,9 @@ class InventoryStock {
             error_log("SQL Query: " . $sql);
             error_log("Params: " . json_encode($params));
 
-            // ດຶງຂໍ້ມູນ
             $stmt = $this->db->prepare($sql);
             $stmt->execute($params);
             $stock = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            // ຄຳນວນ available_quantity ຖ້າບໍ່ມີ
-            foreach ($stock as &$item) {
-                if (!isset($item['available_quantity']) || $item['available_quantity'] === null) {
-                    $item['available_quantity'] = $item['current_quantity'] - ($item['reserved_quantity'] ?? 0);
-                }
-            }
 
             return [
                 'data' => $stock,
@@ -168,7 +163,6 @@ class InventoryStock {
             
         } catch (PDOException $e) {
             error_log("PDO Error in getAllStock: " . $e->getMessage());
-            error_log("SQL State: " . $e->getCode());
             return [
                 'data' => [],
                 'total' => 0,
@@ -201,30 +195,32 @@ class InventoryStock {
 
             $stats = [];
 
-            // ມູນຄ່າລວມ (ຕົ້ນທຶນ)
-            $costSql = "SELECT COALESCE(SUM(s.current_quantity * i.purchase_price), 0) as total_cost
+            // ມູນຄ່າລວມ (ຕົ້ນທຶນ) - ໃຊ້ quantity ແທນ current_quantity
+            $costSql = "SELECT COALESCE(SUM(s.quantity * i.purchase_price), 0) as total_cost
                         FROM {$this->table} s
-                        INNER JOIN inventory_items i ON s.item_id = i.id";
+                        INNER JOIN inventory_items i ON s.item_id = i.id
+                        WHERE s.status = 'active'";
             $costStmt = $this->db->query($costSql);
             $costResult = $costStmt->fetch(PDO::FETCH_ASSOC);
             $stats['total_cost'] = $costResult ? (float)$costResult['total_cost'] : 0;
 
             // ມູນຄ່າລວມ (ຂາຍ)
-            $valueSql = "SELECT COALESCE(SUM(s.current_quantity * i.selling_price), 0) as total_value
+            $valueSql = "SELECT COALESCE(SUM(s.quantity * i.selling_price), 0) as total_value
                          FROM {$this->table} s
-                         INNER JOIN inventory_items i ON s.item_id = i.id";
+                         INNER JOIN inventory_items i ON s.item_id = i.id
+                         WHERE s.status = 'active'";
             $valueStmt = $this->db->query($valueSql);
             $valueResult = $valueStmt->fetch(PDO::FETCH_ASSOC);
             $stats['total_value'] = $valueResult ? (float)$valueResult['total_value'] : 0;
 
             // ຈຳນວນລາຍການທັງໝົດ
-            $countSql = "SELECT COUNT(*) as total_items FROM {$this->table}";
+            $countSql = "SELECT COUNT(*) as total_items FROM {$this->table} WHERE status = 'active'";
             $countStmt = $this->db->query($countSql);
             $countResult = $countStmt->fetch(PDO::FETCH_ASSOC);
             $stats['total_items'] = $countResult ? (int)$countResult['total_items'] : 0;
 
             // ນັບສິນຄ້າທີ່ໝົດສະຕ໋ອກ
-            $outSql = "SELECT COUNT(*) as out_of_stock FROM {$this->table} WHERE current_quantity <= 0";
+            $outSql = "SELECT COUNT(*) as out_of_stock FROM {$this->table} WHERE quantity <= 0 AND status = 'active'";
             $outStmt = $this->db->query($outSql);
             $outResult = $outStmt->fetch(PDO::FETCH_ASSOC);
             $stats['out_of_stock'] = $outResult ? (int)$outResult['out_of_stock'] : 0;
@@ -233,9 +229,10 @@ class InventoryStock {
             $lowSql = "SELECT COUNT(*) as low_stock 
                        FROM {$this->table} s
                        INNER JOIN inventory_items i ON s.item_id = i.id
-                       WHERE s.current_quantity > 0 
+                       WHERE s.status = 'active'
+                         AND s.quantity > 0 
                          AND i.reorder_point IS NOT NULL 
-                         AND s.current_quantity <= i.reorder_point";
+                         AND s.quantity <= i.reorder_point";
             $lowStmt = $this->db->query($lowSql);
             $lowResult = $lowStmt->fetch(PDO::FETCH_ASSOC);
             $stats['low_stock'] = $lowResult ? (int)$lowResult['low_stock'] : 0;
@@ -244,8 +241,9 @@ class InventoryStock {
             $overSql = "SELECT COUNT(*) as overstock 
                         FROM {$this->table} s
                         INNER JOIN inventory_items i ON s.item_id = i.id
-                        WHERE i.maximum_stock IS NOT NULL 
-                          AND s.current_quantity >= i.maximum_stock";
+                        WHERE s.status = 'active'
+                          AND i.maximum_stock IS NOT NULL 
+                          AND s.quantity >= i.maximum_stock";
             $overStmt = $this->db->query($overSql);
             $overResult = $overStmt->fetch(PDO::FETCH_ASSOC);
             $stats['overstock'] = $overResult ? (int)$overResult['overstock'] : 0;
@@ -266,652 +264,47 @@ class InventoryStock {
     }
 
     /**
-     * ດຶງຂໍ້ມູນສະຕ໋ອກຕາມ item_id
+     * ປັບປຸງສະຕ໋ອກ (ໃຊ້ສຳລັບການຊື້ເຂົ້າ)
      */
-    public function getStockByItemId($itemId, $warehouseId = null) {
-        try {
-            $sql = "SELECT s.*,
-                           i.item_code,
-                           i.item_name,
-                           i.barcode,
-                           w.warehouse_name
-                    FROM {$this->table} s
-                    INNER JOIN inventory_items i ON s.item_id = i.id
-                    LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                    WHERE s.item_id = ?";
-            $params = [$itemId];
-
-            if ($warehouseId) {
-                $sql .= " AND s.warehouse_id = ?";
-                $params[] = $warehouseId;
-            }
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute($params);
-            
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-        } catch (Exception $e) {
-            error_log("Error in getStockByItemId: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * ດຶງຂໍ້ມູນສະຕ໋ອກຕາມ ID
-     */
-    public function getStockById($id) {
-        try {
-            $sql = "SELECT s.*,
-                           i.item_code,
-                           i.item_name,
-                           i.barcode,
-                           i.purchase_price,
-                           i.selling_price,
-                           i.reorder_point,
-                           w.warehouse_name
-                    FROM {$this->table} s
-                    INNER JOIN inventory_items i ON s.item_id = i.id
-                    LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                    WHERE s.id = ?";
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([$id]);
-            
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            return $result ?: null;
-            
-        } catch (Exception $e) {
-            error_log("Error in getStockById: " . $e->getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * ດຶງປະຫວັດການເຄື່ອນໄຫວ
-     */
-    public function getMovements($filters = []) {
-        try {
-            // ສ້າງ SQL ສຳລັບດຶງຂໍ້ມູນການເຄື່ອນໄຫວ
-            // ຖ້າມີຕາຕະລາງ stock_movements ໃຫ້ໃຊ້ຕາຕະລາງນັ້ນ
-            // ຖ້າບໍ່ມີ, ສົ່ງຄ່າເລີ່ມຕົ້ນກັບໄປ
-            return [];
-        } catch (Exception $e) {
-            error_log("Error in getMovements: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * ດຶງປະຫວັດການນັບສະຕ໋ອກ
-     */
-    public function getStockCounts($filters = []) {
-        try {
-            // ຖ້າມີຕາຕະລາງ stock_counts ໃຫ້ໃຊ້ຕາຕະລາງນັ້ນ
-            // ຖ້າບໍ່ມີ, ສົ່ງຄ່າເລີ່ມຕົ້ນກັບໄປ
-            return [
-                'data' => [],
-                'total' => 0,
-                'current_page' => 1,
-                'per_page' => 20,
-                'last_page' => 1
-            ];
-        } catch (Exception $e) {
-            error_log("Error in getStockCounts: " . $e->getMessage());
-            return [
-                'data' => [],
-                'total' => 0,
-                'current_page' => 1,
-                'per_page' => 20,
-                'last_page' => 1
-            ];
-        }
-    }
-
-    /**
-     * ປັບປຸງສະຕ໋ອກ
-     */
-    public function adjustStock($itemId, $quantity, $type = 'add', $reference = [], $createdBy = null) {
-        try {
-            $warehouseId = $reference['warehouse_id'] ?? 1; // ສາງເລີ່ມຕົ້ນ
-            
-            // ກວດສອບວ່າມີສະຕ໋ອກສຳລັບສິນຄ້ານີ້ບໍ
-            $checkSql = "SELECT id, current_quantity FROM {$this->table} 
-                        WHERE item_id = ? AND warehouse_id = ?";
-            $checkStmt = $this->db->prepare($checkSql);
-            $checkStmt->execute([$itemId, $warehouseId]);
-            $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($existing) {
-                // ອັບເດດສະຕ໋ອກທີ່ມີຢູ່
-                if ($type === 'set') {
-                    $newQuantity = $quantity;
-                } elseif ($type === 'add') {
-                    $newQuantity = $existing['current_quantity'] + $quantity;
-                } elseif ($type === 'subtract') {
-                    $newQuantity = $existing['current_quantity'] - $quantity;
-                    if ($newQuantity < 0) {
-                        return [
-                            'success' => false,
-                            'message' => 'Insufficient stock'
-                        ];
-                    }
-                } else {
-                    return [
-                        'success' => false,
-                        'message' => 'Invalid adjustment type'
-                    ];
-                }
-
-                $updateSql = "UPDATE {$this->table} 
-                             SET current_quantity = ?, 
-                                 available_quantity = ? - reserved_quantity,
-                                 updated_at = NOW(),
-                                 updated_by = ?
-                             WHERE id = ?";
-                
-                $updateStmt = $this->db->prepare($updateSql);
-                $updateStmt->execute([
-                    $newQuantity,
-                    $newQuantity,
-                    $createdBy,
-                    $existing['id']
-                ]);
-
-                // ບັນທຶກການເຄື່ອນໄຫວຂອງສະຕ໋ອກ
-                $movementType = $this->getMovementType($type, $reference);
-                $this->logStockMovement(
-                    $existing['id'],
-                    $quantity,
-                    $movementType,
-                    $reference['type'] ?? 'adjustment',
-                    $reference['id'] ?? null,
-                    $reference['notes'] ?? null,
-                    $createdBy
-                );
-
-            } else {
-                // ສ້າງສະຕ໋ອກໃໝ່
-                if ($type === 'set') {
-                    $newQuantity = $quantity;
-                } elseif ($type === 'add') {
-                    $newQuantity = $quantity;
-                } elseif ($type === 'subtract') {
-                    $newQuantity = 0; // Can't subtract from zero
-                } else {
-                    return [
-                        'success' => false,
-                        'message' => 'Invalid adjustment type'
-                    ];
-                }
-                
-                $insertSql = "INSERT INTO {$this->table} 
-                             (item_id, warehouse_id, current_quantity, available_quantity, 
-                              created_at, created_by)
-                             VALUES (?, ?, ?, ?, NOW(), ?)";
-                
-                $insertStmt = $this->db->prepare($insertSql);
-                $insertStmt->execute([
-                    $itemId,
-                    $warehouseId,
-                    $newQuantity,
-                    $newQuantity,
-                    $createdBy
-                ]);
-
-                // ບັນທຶກການເຄື່ອນໄຫວຂອງສະຕ໋ອກສຳລັບສະຕ໋ອກໃໝ່
-                $movementType = $this->getMovementType($type, $reference);
-                $this->logStockMovement(
-                    $insertStmt->lastInsertId(),
-                    $quantity,
-                    $movementType,
-                    $reference['type'] ?? 'adjustment',
-                    $reference['id'] ?? null,
-                    $reference['notes'] ?? null,
-                    $createdBy
-                );
-            }
-
-            return [
-                'success' => true,
-                'message' => 'Stock adjusted successfully'
-            ];
-
-        } catch (Exception $e) {
-            error_log("Error in adjustStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'Failed to adjust stock: ' . $e->getMessage()
-            ];
-        }
-    }
-
-    /**
-     * ກຳນົດປະເພດການເຄື່ອນໄຫວຂອງສະຕ໋ອກ
-     */
-    private function getMovementType($type, $reference) {
-        $refType = $reference['type'] ?? 'adjustment';
-        
-        if ($refType === 'loan') {
-            return $type === 'subtract' ? 'loan' : 'loan_return';
-        } elseif ($refType === 'return') {
-            return 'loan_return';
-        } elseif ($type === 'add') {
-            return 'purchase_in';
-        } elseif ($type === 'subtract') {
-            return 'sale_out';
-        } else {
-            return 'adjustment';
-        }
-    }
-
-    /**
-     * ດຶງປະຫວັດການຢືມ-ຄືນສະຕ໋ອກ
-     */
-    public function getLoanHistory($filters = []) {
-        try {
-            $sql = "SELECT 
-                        sm.*,
-                        i.item_code,
-                        i.item_name,
-                        w.warehouse_name,
-                        u.username,
-                        u.first_name,
-                        u.last_name,
-                        u.employee_code
-                    FROM stock_movements sm
-                    LEFT JOIN {$this->table} s ON sm.stock_id = s.id
-                    LEFT JOIN inventory_items i ON s.item_id = i.id
-                    LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                    LEFT JOIN users u ON sm.created_by = u.id
-                    WHERE sm.movement_type IN ('loan', 'loan_return')
-                    ORDER BY sm.movement_date DESC";
-            
-            $params = [];
-            
-            // ເພີ່ມການກັ່ນຕອງຕາມຜູ້ໃຊ້
-            if (!empty($filters['user_id'])) {
-                $sql .= " AND sm.created_by = ?";
-                $params[] = $filters['user_id'];
-            }
-            
-            // ເພີ່ມການກັ່ນຕອງຕາມສິນຄ້າ
-            if (!empty($filters['item_id'])) {
-                $sql .= " AND s.item_id = ?";
-                $params[] = $filters['item_id'];
-            }
-            
-            // ເພີ່ມການກັ່ນຕອງຕາມວັນທີ
-            if (!empty($filters['start_date'])) {
-                $sql .= " AND DATE(sm.movement_date) >= ?";
-                $params[] = $filters['start_date'];
-            }
-            
-            if (!empty($filters['end_date'])) {
-                $sql .= " AND DATE(sm.movement_date) <= ?";
-                $params[] = $filters['end_date'];
-            }
-            
-            // ເພີ່ມການກັ່ນຕອງຕາມປະເພດການເຄື່ອນໄຫວ
-            if (!empty($filters['movement_type'])) {
-                $sql .= " AND sm.movement_type = ?";
-                $params[] = $filters['movement_type'];
-            }
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute($params);
-            
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Exception $e) {
-            error_log("Error getting loan history: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * ໂອນສະຕ໋ອກ
-     */
-    public function transferStock($itemId, $fromWarehouse, $toWarehouse, $quantity, $notes = null, $createdBy = null) {
-        try {
-            // ເລີ່ມ transaction
-            $this->db->beginTransaction();
-
-            // ກວດສອບສະຕ໋ອກຕົ້ນທາງ
-            $checkSql = "SELECT id, current_quantity FROM {$this->table} 
-                        WHERE item_id = ? AND warehouse_id = ? FOR UPDATE";
-            $checkStmt = $this->db->prepare($checkSql);
-            $checkStmt->execute([$itemId, $fromWarehouse]);
-            $fromStock = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$fromStock || $fromStock['current_quantity'] < $quantity) {
-                $this->db->rollBack();
-                return [
-                    'success' => false,
-                    'message' => 'Insufficient stock in source warehouse'
-                ];
-            }
-
-            // ຕັດສະຕ໋ອກຕົ້ນທາງ
-            $updateFromSql = "UPDATE {$this->table} 
-                             SET current_quantity = current_quantity - ?,
-                                 available_quantity = (current_quantity - ?) - reserved_quantity,
-                                 updated_at = NOW(),
-                                 updated_by = ?
-                             WHERE id = ?";
-            $updateFromStmt = $this->db->prepare($updateFromSql);
-            $updateFromStmt->execute([$quantity, $quantity, $createdBy, $fromStock['id']]);
-
-            // ກວດສອບສະຕ໋ອກປາຍທາງ
-            $checkToSql = "SELECT id FROM {$this->table} 
-                          WHERE item_id = ? AND warehouse_id = ?";
-            $checkToStmt = $this->db->prepare($checkToSql);
-            $checkToStmt->execute([$itemId, $toWarehouse]);
-            $toStock = $checkToStmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($toStock) {
-                // ເພີ່ມສະຕ໋ອກປາຍທາງ
-                $updateToSql = "UPDATE {$this->table} 
-                               SET current_quantity = current_quantity + ?,
-                                   available_quantity = (current_quantity + ?) - reserved_quantity,
-                                   updated_at = NOW(),
-                                   updated_by = ?
-                               WHERE id = ?";
-                $updateToStmt = $this->db->prepare($updateToSql);
-                $updateToStmt->execute([$quantity, $quantity, $createdBy, $toStock['id']]);
-            } else {
-                // ສ້າງສະຕ໋ອກໃໝ່ທີ່ປາຍທາງ
-                $insertSql = "INSERT INTO {$this->table} 
-                             (item_id, warehouse_id, current_quantity, available_quantity, 
-                              created_at, created_by)
-                             VALUES (?, ?, ?, ?, NOW(), ?)";
-                $insertStmt = $this->db->prepare($insertSql);
-                $insertStmt->execute([$itemId, $toWarehouse, $quantity, $quantity, $createdBy]);
-            }
-
-            $this->db->commit();
-            
-            return [
-                'success' => true,
-                'message' => 'Stock transferred successfully'
-            ];
-
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            error_log("Error in transferStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'Failed to transfer stock: ' . $e->getMessage()
-            ];
-        }
-    }
-
-    /**
-     * ບັນທຶກການນັບສະຕ໋ອກ
-     */
-    public function recordStockCount($itemId, $actualQuantity, $notes = null, $countedBy = null) {
-        try {
-            // ກວດສອບສະຕ໋ອກປັດຈຸບັນ
-            $checkSql = "SELECT id, current_quantity FROM {$this->table} 
-                        WHERE item_id = ?";
-            $checkStmt = $this->db->prepare($checkSql);
-            $checkStmt->execute([$itemId]);
-            $stock = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$stock) {
-                return [
-                    'success' => false,
-                    'message' => 'Stock not found'
-                ];
-            }
-
-            $difference = $actualQuantity - $stock['current_quantity'];
-
-            // ອັບເດດສະຕ໋ອກ
-            $updateSql = "UPDATE {$this->table} 
-                         SET current_quantity = ?,
-                             available_quantity = ? - reserved_quantity,
-                             last_count_date = NOW(),
-                             last_count_quantity = ?,
-                             updated_at = NOW(),
-                             updated_by = ?
-                         WHERE id = ?";
-            
-            $updateStmt = $this->db->prepare($updateSql);
-            $updateStmt->execute([
-                $actualQuantity,
-                $actualQuantity,
-                $actualQuantity,
-                $countedBy,
-                $stock['id']
-            ]);
-
-            return [
-                'success' => true,
-                'message' => 'Stock count recorded successfully',
-                'difference' => $difference
-            ];
-
-        } catch (Exception $e) {
-            error_log("Error in recordStockCount: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'Failed to record stock count: ' . $e->getMessage(),
-                'difference' => 0
-            ];
-        }
-    }
-
-    /**
-     * ບັນທຶກການນັບຫຼາຍລາຍການ
-     */
-    public function recordBatchStockCount($counts, $countedBy = null) {
-        try {
-            $results = [];
-            $success = true;
-
-            $this->db->beginTransaction();
-
-            foreach ($counts as $count) {
-                $result = $this->recordStockCount(
-                    $count['item_id'],
-                    $count['actual_quantity'],
-                    $count['notes'] ?? null,
-                    $countedBy
-                );
-                
-                $results[] = [
-                    'item_id' => $count['item_id'],
-                    'success' => $result['success'],
-                    'difference' => $result['difference'] ?? 0
-                ];
-
-                if (!$result['success']) {
-                    $success = false;
-                }
-            }
-
-            if ($success) {
-                $this->db->commit();
-                return [
-                    'success' => true,
-                    'message' => 'Batch stock count completed successfully',
-                    'results' => $results
-                ];
-            } else {
-                $this->db->rollBack();
-                return [
-                    'success' => false,
-                    'message' => 'Some counts failed',
-                    'results' => $results
-                ];
-            }
-
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            error_log("Error in recordBatchStockCount: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'Failed to record batch stock count: ' . $e->getMessage(),
-                'results' => []
-            ];
-        }
-    }
-
-    /**
-     * ດຶງສະຫຼຸບການນັບສະຕ໋ອກ
-     */
-    public function getStockCountSummary($fromDate = null, $toDate = null) {
-        try {
-            // ຖ້າມີຕາຕະລາງ stock_counts, ດຶງຂໍ້ມູນສະຫຼຸບ
-            // ຖ້າບໍ່ມີ, ສົ່ງຄ່າເລີ່ມຕົ້ນ
-            return [
-                'total_counts' => 0,
-                'items_counted' => 0,
-                'items_with_difference' => 0,
-                'total_difference' => 0,
-                'counts_by_date' => []
-            ];
-        } catch (Exception $e) {
-            error_log("Error in getStockCountSummary: " . $e->getMessage());
-            return [
-                'total_counts' => 0,
-                'items_counted' => 0,
-                'items_with_difference' => 0,
-                'total_difference' => 0,
-                'counts_by_date' => []
-            ];
-        }
-    }
-
- 
-    /**
-     * ກວດສອບຈຳນວນສິນຄ້າຄົງເຫຼືອ
-     */
-    public function checkStock($itemId, $warehouseId = null) {
-        try {
-            $sql = "SELECT available_quantity 
-                    FROM {$this->table} 
-                    WHERE item_id = ?";
-            
-            $params = [$itemId];
-            
-            if ($warehouseId) {
-                $sql .= " AND warehouse_id = ?";
-                $params[] = $warehouseId;
-            }
-            
-            $sql .= " ORDER BY created_at DESC LIMIT 1";
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute($params);
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            return $result ? (int)$result['available_quantity'] : 0;
-            
-        } catch (Exception $e) {
-            error_log("Error in checkStock: " . $e->getMessage());
-            return 0;
-        }
-    }
-
-    /**
-     * ຕັດສະຕ໋ອກເມື່ອຂາຍ (ອັບເດດ available_quantity ໂດຍກົງ)
-     */
-    public function deductStock($itemId, $quantity, $referenceId = null, $referenceType = null, $notes = null, $createdBy = null) {
-        try {
-            error_log("=== deductStock called ===");
-            error_log("Item ID: $itemId, Quantity: $quantity");
-            
-            // ກວດສອບວ່າມີ record ຂອງສິນຄ້ານີ້ບໍ
-            $sql = "SELECT id, available_quantity FROM {$this->table} WHERE item_id = ? ORDER BY created_at DESC LIMIT 1";
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([$itemId]);
-            $stock = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$stock) {
-                return [
-                    'success' => false,
-                    'message' => 'ບໍ່ພົບຂໍ້ມູນສະຕ໋ອກຂອງສິນຄ້ານີ້'
-                ];
-            }
-            
-            $currentStock = (int)$stock['available_quantity'];
-            
-            if ($currentStock < $quantity) {
-                return [
-                    'success' => false,
-                    'message' => 'ສິນຄ້າບໍ່ພຽງພໍ (ມີເຫຼືອ ' . $currentStock . ')'
-                ];
-            }
-
-            // ອັບເດດ available_quantity (ຕັດອອກ)
-            $newAvailable = $currentStock - $quantity;
-            
-            $sql = "UPDATE {$this->table} 
-                    SET available_quantity = ?,
-                        current_quantity = ?,
-                        updated_at = NOW(),
-                        updated_by = ?
-                    WHERE id = ?";
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([$newAvailable, $newAvailable, $createdBy, $stock['id']]);
-
-            error_log("Stock deducted: Item $itemId, From $currentStock to $newAvailable");
-
-            return [
-                'success' => true,
-                'message' => 'ຕັດສະຕ໋ອກສຳເລັດ'
-            ];
-
-        } catch (Exception $e) {
-            error_log("Error in deductStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'ຕັດສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-            ];
-        }
-    }
-
-
-    /**
-     * ເພີ່ມສະຕ໋ອກ (ເມື່ອຊື້ເຂົ້າ)
-     */
-    public function addStock($itemId, $quantity, $warehouseId = 1, $createdBy = null) {
+    public function addStock($itemId, $quantity, $warehouseId = 1, $createdBy = null, $location = null, $batchNumber = null, $expiryDate = null) {
         try {
             // ກວດສອບວ່າມີ record ຂອງສິນຄ້ານີ້ແລ້ວບໍ
-            $sql = "SELECT id, available_quantity FROM {$this->table} WHERE item_id = ? AND warehouse_id = ?";
+            $sql = "SELECT id, quantity FROM {$this->table} WHERE item_id = ? AND warehouse_id = ? AND status = 'active'";
             $stmt = $this->db->prepare($sql);
             $stmt->execute([$itemId, $warehouseId]);
             $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($existing) {
                 // ອັບເດດຖ້າມີແລ້ວ
-                $newAvailable = $existing['available_quantity'] + $quantity;
-                $newCurrent = $existing['current_quantity'] + $quantity;
+                $newQuantity = $existing['quantity'] + $quantity;
                 
                 $sql = "UPDATE {$this->table} 
-                        SET available_quantity = ?,
-                            current_quantity = ?,
+                        SET quantity = ?,
                             updated_at = NOW(),
                             updated_by = ?
                         WHERE id = ?";
                 $stmt = $this->db->prepare($sql);
-                $stmt->execute([$newAvailable, $newCurrent, $createdBy, $existing['id']]);
+                $stmt->execute([$newQuantity, $createdBy, $existing['id']]);
+                
+                return [
+                    'success' => true,
+                    'message' => 'ເພີ່ມສະຕ໋ອກສຳເລັດ',
+                    'stock_id' => $existing['id']
+                ];
             } else {
                 // ສ້າງໃໝ່ຖ້າຍັງບໍ່ມີ
                 $sql = "INSERT INTO {$this->table} 
-                        (item_id, warehouse_id, current_quantity, reserved_quantity, available_quantity, 
-                         created_at, created_by, updated_at, updated_by)
-                        VALUES (?, ?, ?, 0, ?, NOW(), ?, NOW(), ?)";
+                        (item_id, warehouse_id, quantity, reserved_quantity, location, batch_number, expiry_date, status, created_at, created_by) 
+                        VALUES (?, ?, ?, 0, ?, ?, ?, 'active', NOW(), ?)";
                 $stmt = $this->db->prepare($sql);
-                $stmt->execute([$itemId, $warehouseId, $quantity, $quantity, $createdBy, $createdBy]);
+                $stmt->execute([$itemId, $warehouseId, $quantity, $location, $batchNumber, $expiryDate, $createdBy]);
+                
+                return [
+                    'success' => true,
+                    'message' => 'ເພີ່ມສະຕ໋ອກສຳເລັດ',
+                    'stock_id' => $this->db->lastInsertId()
+                ];
             }
-
-            return [
-                'success' => true,
-                'message' => 'ເພີ່ມສະຕ໋ອກສຳເລັດ'
-            ];
 
         } catch (Exception $e) {
             error_log("Error in addStock: " . $e->getMessage());
@@ -922,179 +315,42 @@ class InventoryStock {
         }
     }
 
-    /**
-     * ບັນທຶກການເຄື່ອນໄຫວຂອງສະຕ໋ອກ
-     */
-    private function logStockMovement($stockId, $quantityChange, $movementType, $referenceType, $referenceId, $notes, $createdBy) {
-        try {
-            // ດຶງຂໍ້ມູນສະຕ໋ອກປັດຈຸບັນ
-            $stockSql = "SELECT current_quantity FROM {$this->table} WHERE id = ?";
-            $stockStmt = $this->db->prepare($stockSql);
-            $stockStmt->execute([$stockId]);
-            $currentStock = $stockStmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$currentStock) {
-                return false;
-            }
-
-            $quantityBefore = $currentStock['current_quantity'] - $quantityChange;
-            $quantityAfter = $currentStock['current_quantity'];
-
-            // ບັນທຶກການເຄື່ອນໄຫວ
-            $insertSql = "INSERT INTO stock_movements 
-                         (stock_id, movement_type, reference_type, reference_id, 
-                          quantity_before, quantity_change, quantity_after, 
-                          notes, created_by, movement_date) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-            
-            $insertStmt = $this->db->prepare($insertSql);
-            $insertStmt->execute([
-                $stockId,
-                $movementType,
-                $referenceType,
-                $referenceId,
-                $quantityBefore,
-                $quantityChange,
-                $quantityAfter,
-                $notes,
-                $createdBy
-            ]);
-
-            return true;
-        } catch (Exception $e) {
-            error_log("Error logging stock movement: " . $e->getMessage());
-            return false;
-        }
-    }
-
-
-        // /**
-    //  * ປັບປຸງສະຕ໋ອກ (ໃຊ້ສຳລັບການນັບສະຕ໋ອກ ຫຼື ປັບປຸງດ້ວຍມື)
-    //  */
-    // public function adjustStock($itemId, $newQuantity, $reason, $createdBy = null) {
-    //     try {
-    //         $this->db->beginTransaction();
-
-    //         $currentStock = $this->checkStock($itemId);
-            
-    //         $sql = "UPDATE {$this->table} 
-    //                 SET available_quantity = ?,
-    //                     current_quantity = ?,
-    //                     updated_at = NOW(),
-    //                     updated_by = ?
-    //                 WHERE item_id = ?";
-            
-    //         $stmt = $this->db->prepare($sql);
-    //         $stmt->execute([$newQuantity, $newQuantity, $createdBy, $itemId]);
-
-    //         $difference = $newQuantity - $currentStock;
-    //         $movementType = $difference > 0 ? 'adjust_add' : 'adjust_subtract';
-            
-    //         $this->logStockMovement($itemId, abs($difference), $movementType, 'adjust', null, $reason, $createdBy);
-
-    //         $this->db->commit();
-
-    //         return [
-    //             'success' => true,
-    //             'message' => 'ປັບປຸງສະຕ໋ອກສຳເລັດ'
-    //         ];
-
-    //     } catch (Exception $e) {
-    //         $this->db->rollBack();
-    //         error_log("Error in adjustStock: " . $e->getMessage());
-    //         return [
-    //             'success' => false,
-    //             'message' => 'ປັບປຸງສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-    //         ];
-    //     }
-    // }
-
- /**
- * ຄືນສະຕ໋ອກເມື່ອຍົກເລີກໃບຂາຍ
- */
-public function restoreStock($itemId, $quantity, $referenceId, $referenceType = 'sales_cancelled', $notes = '', $createdBy = null) {
-    try {
-        error_log("=== restoreStock called ===");
-        error_log("Item ID: $itemId, Quantity: $quantity, Reference ID: $referenceId");
-        
-        // ກວດສອບວ່າມີ record ຂອງສິນຄ້ານີ້ບໍ
-        $sql = "SELECT id, available_quantity FROM {$this->table} WHERE item_id = ? ORDER BY created_at DESC LIMIT 1";
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute([$itemId]);
-        $stock = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$stock) {
-            return [
-                'success' => false,
-                'message' => 'ບໍ່ພົບຂໍ້ມູນສະຕ໋ອກຂອງສິນຄ້ານີ້'
-            ];
-        }
-        
-        $currentStock = (int)$stock['available_quantity'];
-        
-        // ອັບເດດ available_quantity (ເພີ່ມກັບຄືນ)
-        $newAvailable = $currentStock + $quantity;
-        
-        $sql = "UPDATE {$this->table} 
-                SET available_quantity = ?,
-                    current_quantity = ?,
-                    updated_at = NOW(),
-                    updated_by = ?
-                WHERE id = ?";
-        
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute([$newAvailable, $newAvailable, $createdBy, $stock['id']]);
-
-        error_log("Stock restored: Item $itemId, From $currentStock to $newAvailable");
-
-        return [
-            'success' => true,
-            'message' => 'ຄືນສະຕ໋ອກສຳເລັດ'
-        ];
-
-    } catch (Exception $e) {
-        error_log("Error in restoreStock: " . $e->getMessage());
-        return [
-            'success' => false,
-            'message' => 'ຄືນສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-        ];
-    }
-}
-
-    // src/models/InventoryStock.php
-    // ແກ້ໄຂສ່ວນທີ່ມີບັນຫາ (ປະມານແຖວ 826)
-
+    // ເພີ່ມຟັງຊັນສຳລັບຮັບສິນຄ້າຈາກ Purchase Order
     public function receivePurchaseOrder($poId, $items, $userId) {
         try {
             $this->db->beginTransaction();
+            $results = [];
             
             foreach ($items as $item) {
                 $itemId = $item['item_id'];
                 $quantity = $item['received_quantity'];
+                $warehouseId = $item['warehouse_id'] ?? 1;
                 
-                // ກວດສອບວ່າ $itemId ແລະ $quantity ເປັນຕົວເລກ
                 if (!is_numeric($itemId) || !is_numeric($quantity)) {
                     error_log("Invalid item data: " . json_encode($item));
                     continue;
                 }
                 
-                // ດຶງສະຕ໋ອກປັດຈຸບັນ
-                $stmt = $this->db->prepare("SELECT id, current_quantity FROM inventory_stock WHERE item_id = ? AND warehouse_id = ?");
-                $stmt->execute([$itemId, 1]); // warehouse_id = 1 ສຳລັບສາງຫຼັກ
-                $stock = $stmt->fetch(PDO::FETCH_ASSOC);
-                
-                if ($stock) {
-                    $newQuantity = $stock['current_quantity'] + $quantity;
-                    $stmt = $this->db->prepare("UPDATE inventory_stock SET current_quantity = ?, available_quantity = ?, updated_at = NOW() WHERE id = ?");
-                    $stmt->execute([$newQuantity, $newQuantity, $stock['id']]);
-                } else {
-                    $stmt = $this->db->prepare("INSERT INTO inventory_stock (item_id, warehouse_id, current_quantity, available_quantity, created_at) VALUES (?, ?, ?, ?, NOW())");
-                    $stmt->execute([$itemId, 1, $quantity, $quantity]);
-                }
+                // ເພີ່ມສະຕ໋ອກ
+                $result = $this->addStock($itemId, $quantity, $warehouseId, $userId);
+                $results[] = $result;
             }
             
             $this->db->commit();
-            return ['success' => true, 'message' => 'Stock updated successfully'];
+            
+            $success = true;
+            foreach ($results as $result) {
+                if (!$result['success']) {
+                    $success = false;
+                    break;
+                }
+            }
+            
+            return [
+                'success' => $success,
+                'message' => $success ? 'Stock updated successfully' : 'Some items failed to update',
+                'results' => $results
+            ];
             
         } catch (Exception $e) {
             $this->db->rollBack();
@@ -1103,5 +359,246 @@ public function restoreStock($itemId, $quantity, $referenceId, $referenceType = 
         }
     }
 
+    // ເພີ່ມຟັງຊັນນີ້ໃນ InventoryStock.php
+
+    public function getStockCounts($itemId = null, $limit = 50) {
+        try {
+            $sql = "SELECT 
+                        sc.id,
+                        sc.session_id,
+                        sc.item_id,
+                        sc.expected_quantity,
+                        sc.counted_quantity,
+                        sc.variance,
+                        sc.variance_percent,
+                        sc.status,
+                        sc.counted_by,
+                        sc.counted_at,
+                        sc.notes,
+                        i.item_code,
+                        i.item_name,
+                        i.barcode,
+                        CONCAT(u.first_name, ' ', u.last_name) as counted_by_name
+                    FROM stock_count_details sc
+                    LEFT JOIN inventory_items i ON sc.item_id = i.id
+                    LEFT JOIN users u ON sc.counted_by = u.id
+                    WHERE 1=1";
+            
+            $params = [];
+            
+            if ($itemId) {
+                $sql .= " AND sc.item_id = ?";
+                $params[] = $itemId;
+            }
+            
+            $sql .= " ORDER BY sc.counted_at DESC, sc.created_at DESC LIMIT ?";
+            $params[] = $limit;
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+            $counts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return [
+                'success' => true,
+                'data' => $counts
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error getting stock counts: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'data' => []
+            ];
+        }
+    }
+
+    public function getStockCountHistory($itemId = null, $limit = 50) {
+        try {
+            $sql = "SELECT 
+                        sc.id,
+                        sc.session_id,
+                        sc.item_id,
+                        sc.expected_quantity,
+                        sc.counted_quantity,
+                        sc.variance,
+                        sc.variance_percent,
+                        sc.status,
+                        sc.counted_by,
+                        sc.counted_at,
+                        sc.notes,
+                        sc.created_at,
+                        i.item_code,
+                        i.item_name,
+                        i.barcode,
+                        CONCAT(u.first_name, ' ', u.last_name) as counted_by_name
+                    FROM stock_count_details sc
+                    LEFT JOIN inventory_items i ON sc.item_id = i.id
+                    LEFT JOIN users u ON sc.counted_by = u.id
+                    WHERE sc.status = 'counted'";
+            
+            $params = [];
+            
+            if ($itemId) {
+                $sql .= " AND sc.item_id = ?";
+                $params[] = $itemId;
+            }
+            
+            $sql .= " ORDER BY sc.counted_at DESC, sc.created_at DESC LIMIT ?";
+            $params[] = $limit;
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+            $counts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return $counts;
+            
+        } catch (Exception $e) {
+            error_log("Error getting stock count history: " . $e->getMessage());
+            return [];
+        }
+    }
+
+// ເພີ່ມ method ນີ້ໃນ InventoryStock.php
+
+    /**
+     * ຕັດສະຕ໋ອກເມື່ອມີການຂາຍ
+     */
+    public function deductStock($itemId, $quantity, $referenceId, $referenceType, $notes = '', $createdBy = null) {
+        try {
+            // ຊອກຫາສະຕ໋ອກທີ່ມີຢູ່ (ໃຊ້ warehouse ທຳອິດທີ່ມີສິນຄ້າ)
+            $stmt = $this->db->prepare("
+                SELECT id, quantity, available_quantity 
+                FROM inventory_stocks 
+                WHERE item_id = ? AND status = 'active' AND quantity >= ?
+                ORDER BY id ASC
+                LIMIT 1
+            ");
+            $stmt->execute([$itemId, $quantity]);
+            $stock = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$stock) {
+                return [
+                    'success' => false,
+                    'message' => "ສິນຄ້າມີຈຳນວນບໍ່ພຽງພໍ (ຕ້ອງການ: {$quantity})"
+                ];
+            }
+            
+            // ຕັດສະຕ໋ອກ
+            $newQuantity = $stock['quantity'] - $quantity;
+            $newAvailable = ($stock['available_quantity'] ?? $stock['quantity']) - $quantity;
+            
+            $stmt = $this->db->prepare("
+                UPDATE inventory_stocks 
+                SET quantity = ?,
+                    available_quantity = ?,
+                    updated_by = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$newQuantity, $newAvailable, $createdBy, $stock['id']]);
+            
+            // ບັນທຶກປະຫວັດການເຄື່ອນໄຫວ
+            $this->logStockMovement($itemId, $quantity, $referenceId, $referenceType, 'deduct', $notes, $createdBy);
+            
+            return [
+                'success' => true,
+                'message' => 'ຕັດສະຕ໋ອກສຳເລັດ'
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error in deductStock: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'ຕັດສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * ຄືນສະຕ໋ອກເມື່ອຍົກເລີກການຂາຍ
+     */
+    public function restoreStock($itemId, $quantity, $referenceId, $referenceType, $notes = '', $createdBy = null) {
+        try {
+            // ຊອກຫາສະຕ໋ອກທີ່ມີຢູ່
+            $stmt = $this->db->prepare("
+                SELECT id, quantity, available_quantity 
+                FROM inventory_stocks 
+                WHERE item_id = ? AND status = 'active'
+                ORDER BY id ASC
+                LIMIT 1
+            ");
+            $stmt->execute([$itemId]);
+            $stock = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$stock) {
+                // ຖ້າບໍ່ມີສະຕ໋ອກ, ສ້າງໃໝ່
+                $stmt = $this->db->prepare("
+                    INSERT INTO inventory_stocks (
+                        item_id, quantity, available_quantity, status, created_by, updated_by, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'active', ?, ?, NOW(), NOW())
+                ");
+                $stmt->execute([$itemId, $quantity, $quantity, $createdBy, $createdBy]);
+            } else {
+                // ຄືນສະຕ໋ອກ
+                $newQuantity = $stock['quantity'] + $quantity;
+                $newAvailable = ($stock['available_quantity'] ?? $stock['quantity']) + $quantity;
+                
+                $stmt = $this->db->prepare("
+                    UPDATE inventory_stocks 
+                    SET quantity = ?,
+                        available_quantity = ?,
+                        updated_by = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([$newQuantity, $newAvailable, $createdBy, $stock['id']]);
+            }
+            
+            // ບັນທຶກປະຫວັດການເຄື່ອນໄຫວ
+            $this->logStockMovement($itemId, $quantity, $referenceId, $referenceType, 'restore', $notes, $createdBy);
+            
+            return [
+                'success' => true,
+                'message' => 'ຄືນສະຕ໋ອກສຳເລັດ'
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error in restoreStock: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'ຄືນສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * ບັນທຶກປະຫວັດການເຄື່ອນໄຫວສະຕ໋ອກ
+     */
+    private function logStockMovement($itemId, $quantity, $referenceId, $referenceType, $movementType, $notes, $createdBy) {
+        try {
+            // ກວດສອບວ່າມີຕາຕະລາງ stock_movements ບໍ
+            $stmt = $this->db->query("SHOW TABLES LIKE 'stock_movements'");
+            if ($stmt->rowCount() > 0) {
+                $sql = "INSERT INTO stock_movements (
+                            item_id, quantity, movement_type, reference_type, reference_id, 
+                            notes, created_by, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
+                
+                $stmt = $this->db->prepare($sql);
+                $stmt->execute([
+                    $itemId,
+                    $quantity,
+                    $movementType,
+                    $referenceType,
+                    $referenceId,
+                    $notes,
+                    $createdBy
+                ]);
+            }
+        } catch (Exception $e) {
+            error_log("Error logging stock movement: " . $e->getMessage());
+        }
+    }
 }
 ?>

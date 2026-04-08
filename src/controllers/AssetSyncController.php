@@ -2,106 +2,93 @@
 // src/controllers/AssetSyncController.php
 require_once __DIR__ . '/../models/AssetSyncLog.php';
 require_once __DIR__ . '/../models/Asset.php';
+require_once __DIR__ . '/../models/User.php';
 require_once __DIR__ . '/../middleware/AuthMiddleware.php';
 require_once __DIR__ . '/../utils/Response.php';
 
 
 class AssetSyncController {
-    private $assetSyncLog;
     private $assetModel;
+    private $userModel;
     
     public function __construct() {
-        $this->assetSyncLog = new AssetSyncLog();
         $this->assetModel = new Asset();
+        $this->userModel = new User();  // ຕ້ອງມີການສ້າງ User model
     }
     
-    
     /**
-     * ຮັບຂໍ້ມູນການຂາຍຈາກ Frontend ແລະ ບັນທຶກໄວ້
+     * POST /asset/sync-from-sales
+     * ຮັບຂໍ້ມູນການຂາຍຈາກ Sales module ແລ້ວສ້າງເປັນຊັບສິນ
      */
     public function syncFromSales() {
         try {
-            // ກວດສອບ authentication - ໃຊ້ authenticate() ຂອງ AuthMiddleware
-            $userId = AuthMiddleware::authenticate();
+            error_log("=== AssetSyncController::syncFromSales START ===");
             
-            error_log("AssetSyncController: User authenticated - ID: " . $userId);
+            // ກວດສອບ authentication
+            $payload = AuthMiddleware::authenticate();
+            error_log("Auth payload: " . json_encode($payload));
             
-            // ດຶງຂໍ້ມູນຜູ້ໃຊ້
-            $userModel = new User();
-            $user = $userModel->getById($userId);
+            // ສະກັດ user_id
+            if (is_array($payload)) {
+                $userId = $payload['user_id'] ?? $payload['id'] ?? null;
+            } else if (is_object($payload)) {
+                $userId = $payload->user_id ?? $payload->id ?? null;
+            } else {
+                $userId = $payload;
+            }
             
+            if (!$userId) {
+                Response::error('Unauthorized: Invalid user', 401);
+                return;
+            }
+            
+            error_log("User ID: " . $userId);
+            
+            // ກວດສອບວ່າ user ມີຢູ່
+            $user = $this->userModel->getById($userId);
             if (!$user) {
+                error_log("User not found: " . $userId);
                 Response::error('User not found', 404);
                 return;
             }
             
-            // ຮັບຂໍ້ມູນ JSON
+            // ຮັບຂໍ້ມູນ
             $input = json_decode(file_get_contents('php://input'), true);
+            error_log("Input data: " . json_encode($input));
             
             if (!$input) {
-                error_log("AssetSyncController: Invalid input data");
                 Response::error('Invalid input data', 400);
                 return;
             }
             
-            error_log("AssetSyncController: Input data: " . json_encode($input));
-            
             if (empty($input['source_id']) || empty($input['source_number'])) {
-                error_log("AssetSyncController: Missing source_id or source_number");
                 Response::error('Missing required fields: source_id or source_number', 400);
                 return;
             }
             
-            // 1. ບັນທຶກໃນ asset_sync_log
-            $logResult = $this->assetSyncLog->create([
-                'source_type' => $input['source_type'] ?? 'sales_order',
-                'source_id' => $input['source_id'],
-                'source_number' => $input['source_number'],
-                'customer_id' => $input['customer_id'] ?? null,
-                'customer_name' => $input['customer_name'] ?? null,
-                'total_amount' => $input['total_amount'] ?? 0,
-                'sale_date' => $input['sale_date'] ?? date('Y-m-d'),
-                'items_data' => json_encode($input['items'] ?? []),
-                'notes' => $input['notes'] ?? null,
-                'synced_by' => $userId
-            ]);
-            
-            error_log("AssetSyncController: Log result: " . json_encode($logResult));
-            
-            if (!$logResult['success']) {
-                Response::error($logResult['message'], 500);
+            if (empty($input['items']) || !is_array($input['items'])) {
+                Response::error('No items to sync', 400);
                 return;
             }
             
-            // 2. ສ້າງ assets ສຳລັບສິນຄ້າທີ່ຂາຍ
-            $assetResult = $this->assetModel->createFromSales([
-                'source_type' => $input['source_type'] ?? 'sales_order',
-                'source_id' => $input['source_id'],
-                'source_number' => $input['source_number'],
-                'customer_id' => $input['customer_id'] ?? null,
-                'customer_name' => $input['customer_name'] ?? null,
-                'sale_date' => $input['sale_date'] ?? date('Y-m-d'),
-                'items' => $input['items'] ?? [],
-                'company_id' => $input['company_id'] ?? 1,
-                'department_id' => $input['department_id'] ?? 1
-            ], $userId);
+            // ສ້າງຊັບສິນ
+            $result = $this->assetModel->createFromSales($input, $userId);
             
-            error_log("AssetSyncController: Asset creation result: " . json_encode($assetResult));
+            error_log("Create result: " . json_encode($result));
             
-            if ($assetResult['success']) {
+            if ($result['success']) {
                 Response::success([
-                    'sync_id' => $logResult['sync_id'],
-                    'assets_created' => count($assetResult['assets']),
-                    'assets' => $assetResult['assets'],
+                    'assets_created' => count($result['assets']),
+                    'assets' => $result['assets'],
                     'synced_at' => date('Y-m-d H:i:s')
-                ], 200, 'Data synced to asset system successfully');
+                ], 'Data synced to asset system successfully');
             } else {
-                Response::error($assetResult['message'], 500);
+                Response::error($result['message'], 500);
             }
             
         } catch (Exception $e) {
-            error_log("AssetSyncController Error: " . $e->getMessage());
-            error_log("AssetSyncController Stack trace: " . $e->getTraceAsString());
+            error_log("Error in syncFromSales: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
             Response::error('Server error: ' . $e->getMessage(), 500);
         }
     }

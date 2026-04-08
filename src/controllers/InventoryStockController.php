@@ -147,32 +147,22 @@ class InventoryStockController {
     /**
      * GET /inventory/stock/counts - ດຶງປະຫວັດການນັບສະຕ໋ອກ
      */
+ 
     public function getStockCounts() {
         try {
-            // $currentUser = $this->getCurrentUser();
-
-            $filters = [
-                'item_id' => isset($_GET['item_id']) ? (int)$_GET['item_id'] : null,
-                'from_date' => $_GET['from_date'] ?? null,
-                'to_date' => $_GET['to_date'] ?? null,
-                'page' => isset($_GET['page']) ? (int)$_GET['page'] : 1,
-                'limit' => isset($_GET['limit']) ? (int)$_GET['limit'] : 50
-            ];
-
-            $result = $this->stockModel->getStockCounts($filters);
-
+            $itemId = isset($_GET['item_id']) ? (int)$_GET['item_id'] : null;
+            $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
+            
+            $inventoryStock = new InventoryStock();
+            $counts = $inventoryStock->getStockCountHistory($itemId, $limit);
+            
             Response::success([
-                'counts' => $result['data'],
-                'pagination' => [
-                    'current_page' => $result['current_page'],
-                    'per_page' => $result['per_page'],
-                    'total' => $result['total'],
-                    'total_pages' => $result['last_page']
-                ]
-            ], 'Stock counts retrieved successfully');
+                'counts' => $counts
+            ], 200, 'Stock counts retrieved successfully');
+            
         } catch (Exception $e) {
-            error_log("Error in getStockCounts: " . $e->getMessage());
-            Response::error('Failed to retrieve stock counts: ' . $e->getMessage(), 500);
+            error_log("Error getting stock counts: " . $e->getMessage());
+            Response::error('Failed to get stock counts: ' . $e->getMessage(), 500);
         }
     }
 

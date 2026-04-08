@@ -151,8 +151,6 @@ class PurchaseOrder {
         }
     }
 
-
-
     public function getPurchaseOrderById($id) {
         try {
             $sql = "SELECT po.*,
@@ -176,7 +174,6 @@ class PurchaseOrder {
             $purchaseOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($purchaseOrder) {
-                // ໃຊ້ po_id ແທນ purchase_order_id
                 $itemsSql = "SELECT pod.*, 
                                     i.item_code, 
                                     i.item_name,
@@ -191,7 +188,6 @@ class PurchaseOrder {
                 
                 $purchaseOrder['items'] = $items;
                 
-                // ຄຳນວນຍອດລວມທີ່ຮັບແລ້ວ
                 $receivedTotal = 0;
                 foreach ($items as $item) {
                     $receivedTotal += ($item['received_quantity'] ?? 0) * $item['unit_price'];
@@ -231,7 +227,6 @@ class PurchaseOrder {
      */
     public function createPurchaseOrder($data, $createdBy = null) {
         try {
-            // ກວດສອບວ່າເລກທີ PO ຊໍ້າກັນບໍ
             $checkSql = "SELECT id FROM {$this->table} WHERE po_number = ?";
             $checkStmt = $this->db->prepare($checkSql);
             $checkStmt->execute([$data['po_number']]);
@@ -243,10 +238,8 @@ class PurchaseOrder {
                 ];
             }
 
-            // ເລີ່ມ transaction
             $this->db->beginTransaction();
 
-            // ຄຳນວນຍອດລວມ
             $subtotal = 0;
             if (!empty($data['items']) && is_array($data['items'])) {
                 foreach ($data['items'] as $item) {
@@ -262,7 +255,6 @@ class PurchaseOrder {
             $tax = $data['tax'] ?? 0;
             $totalAmount = $subtotal - $discount + $tax;
 
-            // ສ້າງໃບສັ່ງຊື້
             $sql = "INSERT INTO {$this->table} (
                         po_number,
                         supplier_id,
@@ -272,12 +264,14 @@ class PurchaseOrder {
                         discount,
                         tax,
                         total_amount,
+                        currency_code,
+                        exchange_rate,
                         payment_status,
                         status,
                         notes,
                         created_by,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
             
             $stmt = $this->db->prepare($sql);
             $stmt->execute([
@@ -289,6 +283,8 @@ class PurchaseOrder {
                 $discount,
                 $tax,
                 $totalAmount,
+                $data['currency_code'] ?? 'LAK',
+                $data['exchange_rate'] ?? 1,
                 $data['payment_status'] ?? 'unpaid',
                 $data['status'] ?? 'draft',
                 $data['notes'] ?? null,
@@ -297,12 +293,11 @@ class PurchaseOrder {
 
             $poId = $this->db->lastInsertId();
 
-            // ເພີ່ມລາຍການສິນຄ້າໃສ່ purchase_order_details
             if (!empty($data['items']) && is_array($data['items'])) {
                 $itemSql = "INSERT INTO {$this->detailsTable} (
                                 po_id, item_id, quantity, received_quantity, unit_price, 
-                                discount, total_price, warranty_period, notes
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                                discount, total_price, warranty_period, notes, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
                 $itemStmt = $this->db->prepare($itemSql);
 
                 foreach ($data['items'] as $item) {
@@ -316,7 +311,7 @@ class PurchaseOrder {
                         $poId,
                         $item['item_id'],
                         $item['quantity'],
-                        0, // received_quantity ເລີ່ມຕົ້ນເປັນ 0
+                        0,
                         $item['unit_price'],
                         $itemDiscount,
                         $itemTotal,
@@ -338,6 +333,8 @@ class PurchaseOrder {
         } catch (Exception $e) {
             $this->db->rollBack();
             error_log("Error in createPurchaseOrder: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            
             return [
                 'success' => false,
                 'message' => 'ສ້າງໃບສັ່ງຊື້ບໍ່ສຳເລັດ: ' . $e->getMessage()
@@ -345,31 +342,25 @@ class PurchaseOrder {
         }
     }
 
-
-
+    /**
+     * ຮັບສິນຄ້າ ແລະ ອັບເດດສະຕ໋ອກໃນ inventory_stocks
+     */
     public function receivePurchaseOrder($id, $data, $userId) {
         try {
             error_log("=== Starting receivePurchaseOrder ===");
             error_log("PO ID: $id");
             error_log("User ID: $userId");
             
-            // ກວດສອບການເຊື່ອມຕໍ່ຖານຂໍ້ມູນ
             if (!$this->db) {
                 throw new Exception("Database connection not available");
             }
             
-            // ກວດສອບ PDO attributes
             $this->db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            
-            // ກວດສອບວ່າ PDO ຮອງຮັບ transaction
-            if (!$this->db->beginTransaction()) {
-                throw new Exception("Cannot begin transaction - " . $this->db->errorInfo()[2]);
-            }
-            
+            $this->db->beginTransaction();
             error_log("Transaction started successfully");
             
-            // ກວດສອບວ່າ PO ມີຢູ່ ແລະ ສະຖານະເປັນ 'approved'
-            $stmt = $this->db->prepare("SELECT id, status FROM purchase_orders WHERE id = ?");
+            // ກວດສອບ PO
+            $stmt = $this->db->prepare("SELECT id, status, po_number, supplier_id FROM purchase_orders WHERE id = ?");
             $stmt->execute([$id]);
             $po = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -383,53 +374,73 @@ class PurchaseOrder {
                 throw new Exception('Cannot receive items. Order must be approved first. Current status: ' . $po['status']);
             }
             
-            // ອັບເດດລາຍການສິນຄ້າ
             if (empty($data['items']) || !is_array($data['items'])) {
                 throw new Exception('No items to receive');
             }
+            
+            // ດຶງ warehouse_id (ຖ້າມີສົ່ງມາ)
+            $warehouseId = $data['warehouse_id'] ?? null;
             
             foreach ($data['items'] as $item) {
                 if (!isset($item['detail_id']) || !isset($item['received_quantity'])) {
                     throw new Exception("Invalid item data: missing detail_id or received_quantity");
                 }
                 
+                if ($item['received_quantity'] <= 0) {
+                    error_log("Skipping item detail {$item['detail_id']} - quantity is zero");
+                    continue;
+                }
+                
+                // ດຶງຂໍ້ມູນລາຍການສິນຄ້າ
+                $stmt = $this->db->prepare("
+                    SELECT pod.*, i.item_code, i.item_name
+                    FROM purchase_order_details pod
+                    JOIN inventory_items i ON pod.item_id = i.id
+                    WHERE pod.id = ? AND pod.po_id = ?
+                ");
+                $stmt->execute([$item['detail_id'], $id]);
+                $detail = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+                if (!$detail) {
+                    throw new Exception("Item detail not found with ID: " . $item['detail_id']);
+                }
+                
+                // ອັບເດດ received_quantity
                 $stmt = $this->db->prepare("
                     UPDATE purchase_order_details 
-                    SET received_quantity = ?
+                    SET received_quantity = ?,
+                        received_at = NOW()
                     WHERE id = ? AND po_id = ?
                 ");
-                $result = $stmt->execute([
+                $stmt->execute([
                     $item['received_quantity'], 
                     $item['detail_id'], 
                     $id
                 ]);
                 
-                if (!$result) {
-                    throw new Exception("Failed to update item detail ID: " . $item['detail_id']);
-                }
+                // ອັບເດດສະຕ໋ອກ
+                $this->updateOrCreateStock(
+                    $detail['item_id'],
+                    $item['received_quantity'],
+                    $detail['unit_price'],
+                    $userId,
+                    $po['po_number'],
+                    $warehouseId
+                );
+                
                 error_log("Updated detail ID: {$item['detail_id']} with quantity: {$item['received_quantity']}");
             }
             
-            // ອັບເດດສະຖານະ PO ເປັນ 'received'
+            // ອັບເດດສະຖານະ PO
             $stmt = $this->db->prepare("
                 UPDATE purchase_orders 
                 SET status = 'received',
                     delivery_date = NOW()
                 WHERE id = ?
             ");
-            $result = $stmt->execute([$id]);
+            $stmt->execute([$id]);
             
-            if (!$result) {
-                throw new Exception("Failed to update purchase order status");
-            }
-            
-            error_log("PO status updated to received");
-            
-            // Commit transaction
-            if (!$this->db->commit()) {
-                throw new Exception("Failed to commit transaction");
-            }
-            
+            $this->db->commit();
             error_log("Transaction committed successfully");
             
             return [
@@ -438,7 +449,6 @@ class PurchaseOrder {
             ];
             
         } catch (Exception $e) {
-            // Rollback transaction ຖ້າມີ
             if ($this->db && $this->db->inTransaction()) {
                 $this->db->rollBack();
                 error_log("Transaction rolled back");
@@ -453,7 +463,107 @@ class PurchaseOrder {
             ];
         }
     }
+
+    /**
+     * ອັບເດດ ຫຼື ສ້າງສະຕ໋ອກສິນຄ້າໃໝ່ໃນ inventory_stocks
+     */
  
+    private function updateOrCreateStock($itemId, $quantity, $unitPrice, $userId, $referenceNumber, $warehouseId = null) {
+        try {
+            error_log("=== Updating stock for item_id: {$itemId}, quantity: {$quantity} ===");
+            
+            // ບັງຄັບໃຫ້ເປັນ integer
+            $userId = (int)$userId;
+            $itemId = (int)$itemId;
+            $quantity = (float)$quantity;
+            $unitPrice = (float)$unitPrice;
+            
+            // ຖ້າບໍ່ມີ warehouse_id, ໃຊ້ຄ່າເລີ່ມຕົ້ນ
+            if (!$warehouseId) {
+                $stmt = $this->db->prepare("SELECT id FROM warehouses WHERE is_active = 1 LIMIT 1");
+                $stmt->execute();
+                $defaultWarehouse = $stmt->fetch(PDO::FETCH_ASSOC);
+                $warehouseId = $defaultWarehouse ? (int)$defaultWarehouse['id'] : null;
+            }
+            
+            // ຊອກຫາ stock ທີ່ມີຢູ່
+            $sql = "SELECT id, quantity, available_quantity 
+                    FROM inventory_stocks 
+                    WHERE item_id = ? AND status = 'active'";
+            $params = [$itemId];
+            
+            if ($warehouseId) {
+                $sql .= " AND warehouse_id = ?";
+                $params[] = $warehouseId;
+            } else {
+                $sql .= " AND warehouse_id IS NULL";
+            }
+            
+            $sql .= " LIMIT 1";
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+            $existingStock = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($existingStock) {
+                // ອັບເດດສະຕ໋ອກເກົ່າ
+                $newQuantity = $existingStock['quantity'] + $quantity;
+                $newAvailable = ($existingStock['available_quantity'] ?? $existingStock['quantity']) + $quantity;
+                
+                $stmt = $this->db->prepare("
+                    UPDATE inventory_stocks 
+                    SET quantity = ?,
+                        available_quantity = ?,
+                        updated_by = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([
+                    $newQuantity,
+                    $newAvailable,
+                    $userId,
+                    $existingStock['id']
+                ]);
+                
+                error_log("Updated existing stock: old={$existingStock['quantity']}, new={$newQuantity}");
+            } else {
+                // ສ້າງສະຕ໋ອກໃໝ່
+                $stmt = $this->db->prepare("
+                    INSERT INTO inventory_stocks (
+                        item_id,
+                        warehouse_id,
+                        quantity,
+                        reserved_quantity,
+                        available_quantity,
+                        status,
+                        created_by,
+                        updated_by,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, 0, ?, 'active', ?, ?, NOW(), NOW())
+                ");
+                
+                $stmt->execute([
+                    $itemId,
+                    $warehouseId,
+                    $quantity,
+                    $quantity,
+                    $userId,
+                    $userId
+                ]);
+                
+                $stockId = $this->db->lastInsertId();
+                error_log("Created new stock for item {$itemId}, stock_id: {$stockId}, quantity: {$quantity}");
+            }
+            
+            return true;
+            
+        } catch (Exception $e) {
+            error_log("Error updating inventory stock: " . $e->getMessage());
+            throw new Exception("Failed to update inventory stock: " . $e->getMessage());
+        }
+    }
+
     /**
      * ອັບເດດສະຖານະໃບສັ່ງຊື້
      */
@@ -462,25 +572,19 @@ class PurchaseOrder {
             error_log("=== MODEL: updateStatus ===");
             error_log("PO ID: $id");
             error_log("New status: $status");
-            error_log("Approved by: " . ($approvedBy ?? 'null'));
             
-            // ກວດສອບວ່າ PO ມີຢູ່ບໍ
             $checkSql = "SELECT id, status FROM {$this->table} WHERE id = ?";
             $checkStmt = $this->db->prepare($checkSql);
             $checkStmt->execute([$id]);
             $currentPO = $checkStmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$currentPO) {
-                error_log("PO not found with ID: $id");
                 return [
                     'success' => false,
                     'message' => 'ບໍ່ພົບໃບສັ່ງຊື້'
                 ];
             }
             
-            error_log("Current status in DB: " . $currentPO['status']);
-            
-            // ກຽມ SQL ສຳລັບອັບເດດ
             if ($status === 'approved') {
                 $sql = "UPDATE {$this->table} 
                         SET status = ?,
@@ -497,38 +601,8 @@ class PurchaseOrder {
                 $params = [$status, $id];
             }
             
-            error_log("SQL: " . $sql);
-            error_log("Params: " . json_encode($params));
-            
             $stmt = $this->db->prepare($sql);
-            $result = $stmt->execute($params);
-
-            if (!$result) {
-                $error = $stmt->errorInfo();
-                error_log("SQL Error: " . json_encode($error));
-                return [
-                    'success' => false,
-                    'message' => 'ອັບເດດສະຖານະບໍ່ສຳເລັດ: ' . $error[2]
-                ];
-            }
-            
-            // ກວດສອບວ່າອັບເດດໄດ້ຈັກແຖວ
-            $rowCount = $stmt->rowCount();
-            error_log("Rows affected: $rowCount");
-            
-            if ($rowCount === 0) {
-                error_log("No rows updated - status might already be $status");
-                return [
-                    'success' => true,
-                    'message' => 'ສະຖານະເປັນ ' . $status . ' ແລ້ວ'
-                ];
-            }
-            
-            // ດຶງຂໍ້ມູນຫຼັງອັບເດດ
-            $verifyStmt = $this->db->prepare("SELECT status FROM {$this->table} WHERE id = ?");
-            $verifyStmt->execute([$id]);
-            $newStatus = $verifyStmt->fetch(PDO::FETCH_ASSOC);
-            error_log("New status after update: " . ($newStatus['status'] ?? 'unknown'));
+            $stmt->execute($params);
             
             return [
                 'success' => true,
@@ -537,16 +611,14 @@ class PurchaseOrder {
 
         } catch (Exception $e) {
             error_log("Error in updateStatus: " . $e->getMessage());
-            error_log("Stack trace: " . $e->getTraceAsString());
             return [
                 'success' => false,
                 'message' => 'ອັບເດດສະຖານະບໍ່ສຳເລັດ: ' . $e->getMessage()
             ];
         }
     }
- 
 
-        /**
+    /**
      * ອັບເດດສະຖານະການຊຳລະເງິນ
      */
     public function updatePaymentStatus($id, $paymentStatus, $paymentMethod = null, $paymentDate = null) {
@@ -582,7 +654,6 @@ class PurchaseOrder {
         try {
             $stats = [];
 
-            // ຍອດຊື້ທັງໝົດ
             $totalSql = "SELECT 
                             COUNT(*) as total_orders, 
                             COALESCE(SUM(total_amount), 0) as total_amount,
@@ -593,7 +664,6 @@ class PurchaseOrder {
             $totalStmt = $this->db->query($totalSql);
             $stats = $totalStmt->fetch(PDO::FETCH_ASSOC);
 
-            // ນັບຕາມສະຖານະ
             $statusSql = "SELECT status, COUNT(*) as count 
                          FROM {$this->table} 
                          GROUP BY status";
@@ -605,7 +675,6 @@ class PurchaseOrder {
                 $stats['by_status'][$status['status']] = $status['count'];
             }
 
-            // ນັບຕາມສະຖານະການຊຳລະ
             $paymentSql = "SELECT payment_status, COUNT(*) as count 
                           FROM {$this->table} 
                           GROUP BY payment_status";
@@ -617,7 +686,6 @@ class PurchaseOrder {
                 $stats['by_payment_status'][$payment['payment_status']] = $payment['count'];
             }
 
-            // ຍອດຊື້ຕາມເດືອນ
             $monthlySql = "SELECT 
                               DATE_FORMAT(order_date, '%Y-%m') as month,
                               COUNT(*) as order_count,
@@ -651,7 +719,6 @@ class PurchaseOrder {
      */
     public function deletePurchaseOrder($id) {
         try {
-            // ກວດສອບວ່າສາມາດລຶບໄດ້ບໍ (ຕ້ອງເປັນ draft ເທົ່ານັ້ນ)
             $checkSql = "SELECT status FROM {$this->table} WHERE id = ?";
             $checkStmt = $this->db->prepare($checkSql);
             $checkStmt->execute([$id]);
@@ -671,15 +738,12 @@ class PurchaseOrder {
                 ];
             }
 
-            // ເລີ່ມ transaction
             $this->db->beginTransaction();
 
-            // ລຶບລາຍການສິນຄ້າກ່ອນ
             $deleteDetailsSql = "DELETE FROM {$this->detailsTable} WHERE po_id = ?";
             $deleteDetailsStmt = $this->db->prepare($deleteDetailsSql);
             $deleteDetailsStmt->execute([$id]);
 
-            // ລຶບໃບສັ່ງຊື້
             $deleteSql = "DELETE FROM {$this->table} WHERE id = ?";
             $deleteStmt = $this->db->prepare($deleteSql);
             $deleteStmt->execute([$id]);
@@ -702,65 +766,29 @@ class PurchaseOrder {
     }
 
     /**
-     * ອັບເດດໃບເກັບເງິນ (invoice)
-     */
-    public function updateInvoice($id, $invoiceNumber, $invoiceFilePath = null) {
-        try {
-            $sql = "UPDATE {$this->table} 
-                    SET invoice_number = ?,
-                        invoice_file_path = COALESCE(?, invoice_file_path)
-                    WHERE id = ?";
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([$invoiceNumber, $invoiceFilePath, $id]);
-
-            return [
-                'success' => true,
-                'message' => 'ອັບເດດໃບເກັບເງິນສຳເລັດ'
-            ];
-
-        } catch (Exception $e) {
-            error_log("Error in updateInvoice: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'ອັບເດດໃບເກັບເງິນບໍ່ສຳເລັດ: ' . $e->getMessage()
-            ];
-        }
-    }
-
-        /**
-         * ອັບເດດໃບສັ່ງຊື້
-         */
-    /**
-     * ອັບເດດໃບສັ່ງຊື້ (ຮອງຮັບການເພີ່ມ/ລຶບລາຍການ)
+     * ອັບເດດໃບສັ່ງຊື້
      */
     public function updatePurchaseOrder($id, $data, $updatedBy = null) {
         try {
             error_log("=== MODEL: updatePurchaseOrder ===");
             error_log("ID: " . $id);
-            error_log("Items count: " . count($data['items']));
             
-            // ກວດສອບວ່າມີໃບສັ່ງຊື້ນີ້ບໍ
             $existingPO = $this->getPurchaseOrderById($id);
             
             if (!$existingPO) {
-                error_log("Update failed: Purchase order not found with ID: " . $id);
                 return [
                     'success' => false,
                     'message' => 'ບໍ່ພົບໃບສັ່ງຊື້'
                 ];
             }
 
-            // ກວດສອບວ່າສາມາດແກ້ໄຂໄດ້ບໍ (ຕ້ອງເປັນ draft ເທົ່ານັ້ນ)
             if ($existingPO['status'] !== 'draft') {
-                error_log("Cannot update: status is not draft");
                 return [
                     'success' => false,
                     'message' => 'ບໍ່ສາມາດແກ້ໄຂໃບສັ່ງຊື້ທີ່ບໍ່ແມ່ນຮ່າງໄດ້'
                 ];
             }
 
-            // ກວດສອບຂໍ້ມູນເຂົ້າ
             if (empty($data['items']) || !is_array($data['items'])) {
                 return [
                     'success' => false,
@@ -768,60 +796,8 @@ class PurchaseOrder {
                 ];
             }
 
-            // ກວດສອບແຕ່ລະລາຍການສິນຄ້າ
-            foreach ($data['items'] as $index => $item) {
-                if (empty($item['item_id']) || !is_numeric($item['item_id'])) {
-                    return [
-                        'success' => false,
-                        'message' => "ລາຍການທີ່ " . ($index + 1) . ": ຕ້ອງລະບຸລະຫັດສິນຄ້າ"
-                    ];
-                }
-
-                if (empty($item['quantity']) || !is_numeric($item['quantity']) || $item['quantity'] <= 0) {
-                    return [
-                        'success' => false,
-                        'message' => "ລາຍການທີ່ " . ($index + 1) . ": ຈຳນວນຕ້ອງເປັນຕົວເລກບວກ"
-                    ];
-                }
-
-                if (empty($item['unit_price']) || !is_numeric($item['unit_price']) || $item['unit_price'] < 0) {
-                    return [
-                        'success' => false,
-                        'message' => "ລາຍການທີ່ " . ($index + 1) . ": ລາຄາຕໍ່ຫນ່ວຍຕ້ອງເປັນຕົວເລກບໍ່ຕົວລົບ"
-                    ];
-                }
-
-                if (isset($item['discount']) && (!is_numeric($item['discount']) || $item['discount'] < 0 || $item['discount'] > 100)) {
-                    return [
-                        'success' => false,
-                        'message' => "ລາຍການທີ່ " . ($index + 1) . ": ສ່ວນຫຼຸດຕ້ອງເປັນເປີເຊັນລະຫວ່າງ 0-100"
-                    ];
-                }
-
-                // ກວດສອບວ່າສິນຄ້າມີໃນຖານຂໍ້ມູນ
-                $checkItemSql = "SELECT id FROM inventory_items WHERE id = ?";
-                $checkItemStmt = $this->db->prepare($checkItemSql);
-                $checkItemStmt->execute([$item['item_id']]);
-                if (!$checkItemStmt->fetch()) {
-                    return [
-                        'success' => false,
-                        'message' => "ລາຍການທີ່ " . ($index + 1) . ": ບໍ່ພົບສິນຄ້າລະຫັດ " . $item['item_id']
-                    ];
-                }
-            }
-
-            // ກວດສອບ tax
-            if (isset($data['tax']) && (!is_numeric($data['tax']) || $data['tax'] < 0)) {
-                return [
-                    'success' => false,
-                    'message' => 'ອາກອນຕ້ອງເປັນຕົວເລກບໍ່ຕົວລົບ'
-                ];
-            }
-
-            // ເລີ່ມ transaction
             $this->db->beginTransaction();
 
-            // ຄຳນວນຍອດລວມ (ສອດຄ່ອງກັບການສ້າງ)
             $subtotal = 0;
             if (!empty($data['items']) && is_array($data['items'])) {
                 foreach ($data['items'] as $index => $item) {
@@ -831,8 +807,6 @@ class PurchaseOrder {
                         $itemTotal = $itemTotal - ($itemTotal * $itemDiscount / 100);
                     }
                     $subtotal += $itemTotal;
-                    
-                    error_log("Item {$index}: ID={$item['item_id']}, Qty={$item['quantity']}, Price={$item['unit_price']}, ItemTotal={$itemTotal}");
                 }
             }
 
@@ -840,9 +814,6 @@ class PurchaseOrder {
             $tax = $data['tax'] ?? 0;
             $totalAmount = $subtotal - $discount + $tax;
 
-            error_log("Calculated - Subtotal: $subtotal, Discount: $discount, Tax: $tax, Total: $totalAmount");
-
-            // ອັບເດດໃບສັ່ງຊື້
             $sql = "UPDATE {$this->table} 
                     SET expected_delivery = ?,
                         subtotal = ?,
@@ -853,7 +824,7 @@ class PurchaseOrder {
                     WHERE id = ?";
             
             $stmt = $this->db->prepare($sql);
-            $result = $stmt->execute([
+            $stmt->execute([
                 $data['expected_delivery'] ?? null,
                 $subtotal,
                 $discount,
@@ -863,24 +834,10 @@ class PurchaseOrder {
                 $id
             ]);
 
-            if (!$result) {
-                throw new Exception("Failed to update purchase order");
-            }
-
-            error_log("Purchase order header updated");
-
-            // ສຳຄັນ: ລຶບລາຍການສິນຄ້າເກົ່າທັງໝົດອອກ
             $deleteItemsSql = "DELETE FROM {$this->detailsTable} WHERE po_id = ?";
             $deleteItemsStmt = $this->db->prepare($deleteItemsSql);
-            $deleteResult = $deleteItemsStmt->execute([$id]);
-            
-            if (!$deleteResult) {
-                throw new Exception("Failed to delete old items");
-            }
+            $deleteItemsStmt->execute([$id]);
 
-            error_log("Old items deleted successfully");
-
-            // ເພີ່ມລາຍການສິນຄ້າໃໝ່ທັງໝົດ
             if (!empty($data['items']) && is_array($data['items'])) {
                 $itemSql = "INSERT INTO {$this->detailsTable} (
                                 po_id, item_id, quantity, received_quantity, unit_price, 
@@ -888,47 +845,27 @@ class PurchaseOrder {
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $itemStmt = $this->db->prepare($itemSql);
 
-                $insertCount = 0;
                 foreach ($data['items'] as $item) {
                     $itemDiscount = $item['discount'] ?? 0;
                     $itemSubtotal = $item['quantity'] * $item['unit_price'];
                     $discountAmount = $itemSubtotal * ($itemDiscount / 100);
                     $itemTotal = $itemSubtotal - $discountAmount;
                     
-                    $itemResult = $itemStmt->execute([
+                    $itemStmt->execute([
                         $id,
                         $item['item_id'],
                         $item['quantity'],
-                        0, // received_quantity
+                        0,
                         $item['unit_price'],
                         $itemDiscount,
                         $itemTotal,
                         $item['warranty_period'] ?? null,
                         $item['notes'] ?? null
                     ]);
-                    
-                    if (!$itemResult) {
-                        throw new Exception("Failed to insert item: " . json_encode($item));
-                    }
-                    $insertCount++;
-                    error_log("Item inserted: {$item['item_id']}");
                 }
-                
-                error_log("Total items inserted: $insertCount");
-            } else {
-                error_log("No items to insert");
             }
 
-            // ກວດສອບວ່າຂໍ້ມູນຖືກບັນທຶກຈິງບໍ
-            $verifySql = "SELECT COUNT(*) as count FROM {$this->detailsTable} WHERE po_id = ?";
-            $verifyStmt = $this->db->prepare($verifySql);
-            $verifyStmt->execute([$id]);
-            $verifyResult = $verifyStmt->fetch(PDO::FETCH_ASSOC);
-            
-            error_log("After update - Items count in DB: " . $verifyResult['count']);
-
             $this->db->commit();
-            error_log("Transaction committed successfully");
 
             return [
                 'success' => true,
@@ -938,14 +875,12 @@ class PurchaseOrder {
         } catch (Exception $e) {
             $this->db->rollBack();
             error_log("Error in updatePurchaseOrder: " . $e->getMessage());
-            error_log("Stack trace: " . $e->getTraceAsString());
             return [
                 'success' => false,
                 'message' => 'ອັບເດດໃບສັ່ງຊື້ບໍ່ສຳເລັດ: ' . $e->getMessage()
             ];
         }
     }
-
 
     /**
      * ສ້າງເລກທີ່ໃບສັ່ງຊື້ອັດຕະໂນມັດ
@@ -961,6 +896,5 @@ class PurchaseOrder {
         
         return $prefix . '-' . $year . '-' . str_pad($count, 3, '0', STR_PAD_LEFT);
     }
-
 }
 ?>

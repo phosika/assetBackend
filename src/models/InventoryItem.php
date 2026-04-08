@@ -607,52 +607,6 @@ class InventoryItem {
         }
     }
 
-    /**
- * ດຶງຂໍ້ມູນສິນຄ້າສຳລັບການຂາຍ ພ້ອມກວດສອບຈຳນວນຄົງເຫຼືອ
- */
-// public function getItemsWithStockForSale($search = '') {
-//     try {
-//         $sql = "SELECT 
-//                     ii.id,
-//                     ii.item_code,
-//                     ii.item_name,
-//                     ii.unit_price,
-//                     ii.barcode,
-//                     COALESCE(is.total_quantity, 0) as stock_quantity
-//                 FROM {$this->table} ii
-//                 LEFT JOIN (
-//                     SELECT 
-//                         item_id, 
-//                         SUM(quantity) as total_quantity 
-//                     FROM inventory_stock 
-//                     GROUP BY item_id
-//                 ) is ON ii.id = is.item_id
-//                 WHERE ii.status = 1";
-        
-//         $params = [];
-        
-//         // ກັ່ນຕອງສະເພາະສິນຄ້າທີ່ມີ stock > 0
-//         $sql .= " AND COALESCE(is.total_quantity, 0) > 0";
-        
-//         if (!empty($search)) {
-//             $sql .= " AND (ii.item_code LIKE ? OR ii.item_name LIKE ? OR ii.barcode LIKE ?)";
-//             $params[] = "%$search%";
-//             $params[] = "%$search%";
-//             $params[] = "%$search%";
-//         }
-        
-//         $sql .= " ORDER BY ii.item_name ASC LIMIT 100";
-        
-//         $stmt = $this->db->prepare($sql);
-//         $stmt->execute($params);
-        
-//         return $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-//     } catch (Exception $e) {
-//         error_log("Error in getItemsWithStockForSale: " . $e->getMessage());
-//         return [];
-//     }
-// }
 
     /**
      * ດຶງຂໍ້ມູນສິນຄ້າສຳລັບການຂາຍ ພ້ອມຈຳນວນຄົງເຫຼືອ
@@ -700,6 +654,18 @@ class InventoryItem {
             return [];
         }
     }
+
+    // ເພີ່ມໃນ InventoryItem.php
+public function getLatestItemCode() {
+    try {
+        $stmt = $this->db->query("SELECT item_code FROM inventory_items ORDER BY id DESC LIMIT 1");
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        return $result ? $result['item_code'] : 'ITEM00000';
+    } catch (Exception $e) {
+        return 'ITEM00000';
+    }
+}
 
 }
 ?>

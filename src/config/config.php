@@ -1,5 +1,5 @@
 <?php
-// /home/phosika/Fixasset/assetapplication/BACKEND/src/config/config.php
+
 
 class Config {
     private static $env = [];

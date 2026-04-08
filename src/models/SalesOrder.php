@@ -275,6 +275,19 @@ public function getAllSalesOrders($filters = [], $companyId = null, $branchId = 
      */
     public function createSalesOrder($data, $createdBy = null, $companyId = null, $branchId = null) {
         try {
+            // ກວດສອບວ່າມີ company_id ຫຼືບໍ່
+            if (!$companyId) {
+                // ຖ້າບໍ່ມີ, ລອງດຶງຈາກຜູ້ໃຊ້
+                $stmt = $this->db->prepare("SELECT company_id FROM users WHERE id = ?");
+                $stmt->execute([$createdBy]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                $companyId = $user['company_id'] ?? null;
+            }
+            
+            if (!$companyId) {
+                throw new Exception("Company ID is required to create a sales order");
+            }
+            
             // ກວດສອບວ່າເລກທີ SO ຊໍ້າກັນບໍ
             $checkSql = "SELECT id FROM {$this->table} WHERE so_number = ?";
             $checkStmt = $this->db->prepare($checkSql);
@@ -287,7 +300,7 @@ public function getAllSalesOrders($filters = [], $companyId = null, $branchId = 
                 ];
             }
 
-            // ເລີ່ມ transaction ທີ່ນີ້
+            // ເລີ່ມ transaction
             $this->db->beginTransaction();
 
             // ຄຳນວນຍອດລວມ
@@ -306,11 +319,23 @@ public function getAllSalesOrders($filters = [], $companyId = null, $branchId = 
             $tax = $data['tax'] ?? 0;
             $totalAmount = $subtotal - $discount + $tax;
 
-            // ສ້າງໃບຂາຍ
+            // ສ້າງໃບຂາຍ - ຕ້ອງມີ company_id
             $sql = "INSERT INTO {$this->table} (
-                        so_number, customer_id, sale_date, company_id, branch_id,
-                        subtotal, discount, tax, total_amount,
-                        payment_status, status, payment_method, notes, created_by, created_at
+                        so_number, 
+                        customer_id, 
+                        sale_date, 
+                        company_id, 
+                        branch_id,
+                        subtotal, 
+                        discount, 
+                        tax, 
+                        total_amount,
+                        payment_status, 
+                        status, 
+                        payment_method, 
+                        notes, 
+                        created_by, 
+                        created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
             
             $stmt = $this->db->prepare($sql);
@@ -359,7 +384,7 @@ public function getAllSalesOrders($filters = [], $companyId = null, $branchId = 
                     ]);
                 }
                 
-                // ຕັດສະຕ໋ອກ - ຖ້າມີ error ຈະ throw exception ແລະ rollback
+                // ຕັດສະຕ໋ອກ
                 $this->deductStockForItems($data['items'], $soId, $createdBy);
             }
 
@@ -373,11 +398,11 @@ public function getAllSalesOrders($filters = [], $companyId = null, $branchId = 
             ];
 
         } catch (Exception $e) {
-            // ຖ້າມີ error, rollback transaction
             if ($this->db->inTransaction()) {
                 $this->db->rollBack();
             }
             error_log("Error in createSalesOrder: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
             return [
                 'success' => false,
                 'message' => 'ສ້າງໃບຂາຍບໍ່ສຳເລັດ: ' . $e->getMessage()

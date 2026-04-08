@@ -445,5 +445,19 @@ class InventoryItemController {
             Response::error('Failed to delete item: ' . $e->getMessage(), 500);
         }
     }
+
+    // ເພີ່ມໃນ InventoryItemController.php
+    public function getLatestCode() {
+        try {
+            $model = new InventoryItem();
+            $latestCode = $model->getLatestItemCode();
+            
+            Response::success([
+                'latest_code' => $latestCode
+            ], 200, 'Latest code retrieved');
+        } catch (Exception $e) {
+            Response::error('Failed to get latest code', 500);
+        }
+    }
 }
 ?>

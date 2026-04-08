@@ -310,7 +310,7 @@ class SalesController {
     //     }
     // }
 
-        /**
+    /**
      * ສ້າງໃບຂາຍໃໝ່
      */
     public function createSalesOrder() {
@@ -324,8 +324,34 @@ class SalesController {
                 return;
             }
             
-            // ຮັບຂໍ້ມູນ
-            $input = json_decode(file_get_contents('php://input'), true);
+            // ດຶງຂໍ້ມູນຜູ້ໃຊ້ເພື່ອເອົາ company_id ແລະ branch_id
+            $db = Database::getInstance();
+            $stmt = $db->prepare("SELECT company_id, branch_id, role FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$user) {
+                Response::error('User not found', 404);
+                return;
+            }
+            
+            $companyId = $user['company_id'] ?? null;
+            $branchId = $user['branch_id'] ?? null;
+            
+            // ຖ້າເປັນ super_admin ຫຼື admin, ສາມາດເລືອກຈາກ request ໄດ້
+            if ($user['role'] === 'super_admin' || $user['role'] === 'asset_admin') {
+                $input = json_decode(file_get_contents('php://input'), true);
+                $companyId = $input['company_id'] ?? $companyId;
+                $branchId = $input['branch_id'] ?? $branchId;
+            } else {
+                // ຖ້າບໍ່ແມ່ນ admin, ຮັບຂໍ້ມູນປົກກະຕິ
+                $input = json_decode(file_get_contents('php://input'), true);
+            }
+            
+            if (!$companyId) {
+                Response::error('No company associated with this user. Please contact administrator.', 400);
+                return;
+            }
             
             if (!$input) {
                 Response::error('Invalid input data', 400);
@@ -333,32 +359,39 @@ class SalesController {
             }
             
             // ກວດສອບຂໍ້ມູນທີ່ຈຳເປັນ
-            if (empty($input['so_number']) && empty($input['customer_id'])) {
+            if (empty($input['so_number'])) {
                 // ຖ້າບໍ່ມີເລກທີ່, ສ້າງອັດຕະໂນມັດ
                 $input['so_number'] = $this->generateSalesOrderNumber();
             }
             
-            // ກວດສອບວ່າເລກທີ່ຖືກຕ້ອງຕາມຮູບແບບ ຫຼື ບໍ່
+            // ກວດສອບວ່າເລກທີ່ຖືກຕ້ອງຕາມຮູບແບບ
             if (!preg_match('/^SA-\d{4}-\d{3}$/', $input['so_number'])) {
                 Response::error('Invalid sales order number format. Expected: SA-YYYY-XXX', 400);
                 return;
             }
             
+            // ເພີ່ມ company_id ແລະ branch_id ເຂົ້າໄປໃນຂໍ້ມູນ
+            $input['company_id'] = $companyId;
+            $input['branch_id'] = $branchId;
+            
+            error_log("Creating sales order with company_id: {$companyId}, branch_id: {$branchId}");
+            
             // ສ້າງໃບຂາຍ
             $salesOrder = new SalesOrder();
-            $result = $salesOrder->createSalesOrder($input, $userId);
+            $result = $salesOrder->createSalesOrder($input, $userId, $companyId, $branchId);
             
             if ($result['success']) {
                 Response::success([
                     'id' => $result['id'],
                     'so_number' => $result['so_number']
-                ], 201, $result['message']);
+                ], $result['message'], 201);
             } else {
                 Response::error($result['message'], 400);
             }
             
         } catch (Exception $e) {
             error_log("Error in createSalesOrder: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
             Response::error('Server error: ' . $e->getMessage(), 500);
         }
     }
@@ -370,14 +403,12 @@ class SalesController {
         $year = date('Y');
         $prefix = 'SA';
         
-        // ນັບຈຳນວນໃບຂາຍໃນປີປັດຈຸບັນ
         $db = Database::getInstance();
         $stmt = $db->prepare("SELECT COUNT(*) as count FROM sales_orders WHERE so_number LIKE ? AND YEAR(created_at) = ?");
         $stmt->execute(["SA-{$year}-%", $year]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         $count = ($result ? (int)$result['count'] : 0) + 1;
         
-        // ສ້າງເລກທີ່: SA-2026-001
         return $prefix . '-' . $year . '-' . str_pad($count, 3, '0', STR_PAD_LEFT);
     }
 

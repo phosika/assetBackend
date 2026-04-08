@@ -548,33 +548,38 @@ class PurchaseController {
 
     public function receivePurchaseOrder($id) {
         try {
-            $userId = AuthMiddleware::authenticate();
-            $input = json_decode(file_get_contents('php://input'), true);
+            // ດຶງ user ID ຈາກ token ໃຫ້ຖືກຕ້ອງ
+            $payload = AuthMiddleware::authenticate();
+            
+            // ສະກັດເອົາ user_id ຈາກ payload ທີ່ເປັນ Array ຫຼື Object
+            if (is_array($payload)) {
+                $userId = $payload['user_id'] ?? $payload['id'] ?? null;
+            } else if (is_object($payload)) {
+                $userId = $payload->user_id ?? $payload->id ?? null;
+            } else {
+                $userId = null;
+            }
+            
+            // ບັງຄັບໃຫ້ເປັນ integer
+            $userId = (int)$userId;
+            
+            if (!$userId || $userId <= 0) {
+                error_log("Invalid user ID: " . json_encode($payload));
+                Response::error('Unauthorized: Invalid user ID', 401);
+                return;
+            }
             
             error_log("=== RECEIVE PURCHASE ORDER ===");
             error_log("PO ID: $id");
+            error_log("User ID (after cast): $userId");
+            
+            $input = json_decode(file_get_contents('php://input'), true);
             error_log("Input: " . json_encode($input));
             
             // ກວດສອບວ່າມີ items ບໍ
             if (empty($input['items'])) {
                 Response::error('ກະລຸນາລະບຸລາຍການສິນຄ້າ', 400);
                 return;
-            }
-            
-            // ກວດສອບວ່າແຕ່ລະ item ມີຂໍ້ມູນຄົບຖ້ວນ
-            foreach ($input['items'] as $index => $item) {
-                if (!isset($item['detail_id'])) {
-                    Response::error('ລາຍການທີ່ ' . ($index + 1) . ': ຂາດຂໍ້ມູນ detail_id', 400);
-                    return;
-                }
-                if (!isset($item['received_quantity'])) {
-                    Response::error('ລາຍການທີ່ ' . ($index + 1) . ': ຂາດຂໍ້ມູນ received_quantity', 400);
-                    return;
-                }
-                if ($item['received_quantity'] < 0) {
-                    Response::error('ລາຍການທີ່ ' . ($index + 1) . ': ຈຳນວນທີ່ຮັບບໍ່ສາມາດເປັນລົບໄດ້', 400);
-                    return;
-                }
             }
             
             // ສ້າງ PurchaseOrder model ແລະ ເອີ້ນ receivePurchaseOrder

@@ -1027,103 +1027,73 @@ class Asset {
     }
 
 
+
     /**
-     * ດຶງ category ID ຕາມຊື່ສິນຄ້າ (ຈາກຖານຂໍ້ມູນ)
+     * ສ້າງຊັບສິນຈາກການຂາຍ
      */
-    private function getCategoryIdByItemName($itemName) {
-        try {
-            // ຊອກຫາ category ທີ່ມີຊື່ກົງກັນ
-            $stmt = $this->db->prepare("SELECT id FROM asset_categories WHERE category_name LIKE ? LIMIT 1");
-            $stmt->execute(["%$itemName%"]);
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if ($result) {
-                return $result['id'];
-            }
-            
-            // ຖ້າບໍ່ພົບ, ໃຊ້ default ຮາດແວ (id=1)
-            return 1;
-            
-        } catch (Exception $e) {
-            error_log("Error getting category by item name: " . $e->getMessage());
-            return 1;
-        }
-    }
-
-
-
     /**
      * ສ້າງຊັບສິນຈາກການຂາຍ
      */
     public function createFromSales($data, $createdBy) {
         try {
-            error_log("=== Asset::createFromSales called ===");
+            error_log("=== Asset::createFromSales START ===");
             error_log("Data: " . json_encode($data));
             error_log("Created by: " . $createdBy);
             
-            // ກວດສອບວ່າ created_by ມີໃນ users table ບໍ
-            $stmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND status = 1");
+            // 1. ກວດສອບວ່າ user ມີຢູ່
+            $stmt = $this->db->prepare("SELECT id, company_id, department_id FROM users WHERE id = ? AND status = 1");
             $stmt->execute([$createdBy]);
-            $userExists = $stmt->fetch();
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
-            if (!$userExists) {
-                error_log("Created by user $createdBy not found, using default user 6");
-                $createdBy = 6; // ໃຊ້ Phosika (id=6) ເປັນ default
+            if (!$user) {
+                error_log("User $createdBy not found, using default user 6");
+                $createdBy = 6;
+                $stmt = $this->db->prepare("SELECT id, company_id, department_id FROM users WHERE id = ?");
+                $stmt->execute([$createdBy]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
             }
             
-            // ກວດສອບ customer_id ວ່າມີໃນ users table ບໍ
-            $customerId = $data['customer_id'];
-            $validUserId = null;
+            // 2. ກຳນົດຄ່າເລີ່ມຕົ້ນ
+            $companyId = $data['company_id'] ?? ($user['company_id'] ?? 1);
+            $departmentId = $data['department_id'] ?? ($user['department_id'] ?? 1);
             
-            if ($customerId) {
-                $stmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND status = 1");
-                $stmt->execute([$customerId]);
-                $userExists = $stmt->fetch();
-                if ($userExists) {
-                    $validUserId = $customerId;
-                    error_log("Customer ID $customerId found in users table");
-                } else {
-                    // ຖ້າບໍ່ມີ, ໃຊ້ created_by (id=6) ແທນ
-                    $validUserId = $createdBy;
-                    error_log("Customer ID $customerId not found in users, using created_by: $createdBy");
-                }
-            } else {
-                $validUserId = $createdBy;
-                error_log("No customer ID, using created_by: $createdBy");
-            }
+            error_log("Company ID: $companyId, Department ID: $departmentId, User ID: $createdBy");
             
             $this->db->beginTransaction();
             
             $assets = [];
             
             foreach ($data['items'] as $item) {
-                // ດຶງ category ຕາມຊື່ສິນຄ້າ
+                // 3. ຫາເລກທີ່ຊັບສິນຫຼ້າສຸດ
+                $stmt = $this->db->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING(asset_code, 11, 5) AS UNSIGNED)), 0) as last_num FROM assets WHERE asset_code LIKE CONCAT('AST', DATE_FORMAT(NOW(), '%Y%m'), '%')");
+                $stmt->execute();
+                $result = $stmt->fetch(PDO::FETCH_ASSOC);
+                $newNum = ($result['last_num'] ?? 0) + 1;
+                $assetCode = 'AST' . date('Ym') . str_pad($newNum, 5, '0', STR_PAD_LEFT) . 'S';
+                
+                error_log("Generated asset code: $assetCode");
+                
+                // 4. ຫາ category_id
                 $categoryId = $this->getCategoryIdByItemName($item['item_name']);
-                error_log("Category ID for '{$item['item_name']}': $categoryId");
+                error_log("Category ID: $categoryId");
                 
-                // ສ້າງລະຫັດຊັບສິນ
-                $assetCode = $this->generateSoldAssetCode();
-                error_log("Generated asset code: " . $assetCode);
-                
+                // 5. ກຽມຂໍ້ມູນຊັບສິນ
                 $assetData = [
                     'asset_code' => $assetCode,
                     'asset_name' => $item['item_name'],
-                    'asset_name_en' => $item['item_name_en'] ?? $item['item_name'],
                     'description' => "ສິນຄ້າທີ່ຂາຍອອກ: {$item['item_name']}",
-                    'category_id' => $categoryId,
-                    'category_level1_id' => $categoryId,
                     'purchase_date' => $data['sale_date'],
                     'purchase_cost' => (float)$item['total_price'],
                     'current_value' => (float)$item['total_price'],
-                    'salvage_value' => 0,
-                    'depreciation_method' => 'none',
                     'status' => 'sold',
                     'asset_condition' => 'good',
-                    'company_id' => $data['company_id'] ?? 1,
-                    'department_id' => $data['department_id'] ?? 1,
-                    'current_user_id' => $validUserId, // ໃຊ້ user ID ທີ່ຖືກຕ້ອງ (6 ຫຼື ອື່ນໆ)
+                    'company_id' => $companyId,
+                    'department_id' => $departmentId,
+                    'current_user_id' => $createdBy,
+                    'category_id' => $categoryId,
                     'notes' => "ຂາຍອອກຕາມໃບຂາຍ {$data['source_number']} - ລູກຄ້າ: {$data['customer_name']}",
                     'is_active' => 1,
+                    'created_by' => $createdBy,
                     'custom_fields' => json_encode([
                         'source_type' => $data['source_type'],
                         'source_id' => $data['source_id'],
@@ -1138,12 +1108,10 @@ class Asset {
                     ])
                 ];
                 
-                error_log("Asset data to create: " . json_encode($assetData));
+                error_log("Asset data: " . json_encode($assetData));
                 
-                // ໃຊ້ຟັງຊັນ create ທີ່ມີຢູ່ແລ້ວ
+                // 6. ສ້າງຊັບສິນ
                 $result = $this->create($assetData, $createdBy);
-                
-                error_log("Create result: " . json_encode($result));
                 
                 if (!$result['success']) {
                     throw new Exception($result['message']);
@@ -1152,10 +1120,10 @@ class Asset {
                 $assets[] = [
                     'id' => $result['asset_id'],
                     'asset_code' => $assetCode,
-                    'asset_name' => $item['item_name'],
-                    'quantity' => $item['quantity'],
-                    'total_price' => (float)$item['total_price']
+                    'asset_name' => $item['item_name']
                 ];
+                
+                error_log("Asset created successfully: ID {$result['asset_id']}");
             }
             
             $this->db->commit();
@@ -1170,12 +1138,46 @@ class Asset {
             
         } catch (Exception $e) {
             $this->db->rollBack();
-            error_log("Error creating assets from sales: " . $e->getMessage());
+            error_log("Error in createFromSales: " . $e->getMessage());
             error_log("Stack trace: " . $e->getTraceAsString());
             return [
                 'success' => false,
                 'message' => 'Failed to create assets: ' . $e->getMessage()
             ];
+        }
+    }
+
+    /**
+     * ດຶງ category ID ຕາມຊື່ສິນຄ້າ
+     */
+    private function getCategoryIdByItemName($itemName) {
+        try {
+            // ຊອກຫາ category ທີ່ມີຊື່ກົງກັນ
+            $stmt = $this->db->prepare("SELECT id FROM asset_categories WHERE category_name LIKE ? LIMIT 1");
+            $stmt->execute(["%$itemName%"]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($result) {
+                return $result['id'];
+            }
+            
+            // ຖ້າບໍ່ພົບ, ຊອກຫາ category ເລີ່ມຕົ້ນ
+            $stmt = $this->db->prepare("SELECT id FROM asset_categories WHERE id = 1 LIMIT 1");
+            $stmt->execute();
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($result) {
+                return $result['id'];
+            }
+            
+            // ຖ້າຍັງບໍ່ມີ, ສ້າງໃໝ່
+            $stmt = $this->db->prepare("INSERT INTO asset_categories (category_name, category_name_en, level, created_at) VALUES (?, ?, 1, NOW())");
+            $stmt->execute(['ສິນຄ້າຂາຍ', 'Sold Products']);
+            return $this->db->lastInsertId();
+            
+        } catch (Exception $e) {
+            error_log("Error getting category by item name: " . $e->getMessage());
+            return 1;
         }
     }
     /**
