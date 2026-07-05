@@ -1,603 +1,430 @@
 <?php
-
+// src/models/InventoryStock.php
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/Product.php';
 
-class InventoryStock {
+class InventoryStock
+{
     private $db;
-    private $table = 'inventory_stocks'; // ປ່ຽນຈາກ 'inventory_stock' ເປັນ 'inventory_stocks'
+    private $table = 'inventory_stocks';
 
-    public function __construct() {
-        $this->db = Database::getInstance();
-        if (!$this->db) {
-            error_log("Database connection failed in InventoryStock model");
-            throw new Exception("Database connection failed");
-        }
+    public function __construct($db)
+    {
+        $this->db = $db;
     }
 
     /**
-     * ດຶງຂໍ້ມູນສະຕ໋ອກທັງໝົດ ພ້ອມການກັ່ນຕອງ ແລະ ການແບ່ງໜ້າ
+     * Get paginated inventory stocks with search and filter criteria
      */
-    public function getAllStock($filters = []) {
+    public function list($page = 1, $limit = 10, $filters = [])
+    {
         try {
-            if (!$this->db) {
-                throw new Exception("Database connection not available");
-            }
-
-            // ສ້າງ SQL ພື້ນຖານ - ໃຊ້ quantity ແທນ current_quantity
-            $sql = "SELECT 
-                        s.id,
-                        s.item_id,
-                        s.warehouse_id,
-                        s.quantity as current_quantity,
-                        s.reserved_quantity,
-                        (s.quantity - COALESCE(s.reserved_quantity, 0)) as available_quantity,
-                        s.location as shelf_location,
-                        s.batch_number,
-                        s.expiry_date,
-                        s.status,
-                        s.created_at,
-                        s.updated_at,
-                        i.item_code,
-                        i.item_name,
-                        i.item_name_en,
-                        i.barcode,
-                        i.purchase_price,
-                        i.selling_price,
-                        i.reorder_point,
-                        i.minimum_stock,
-                        i.maximum_stock,
-                        i.is_active,
-                        c.category_name,
-                        sup.supplier_name,
-                        w.warehouse_name
-                    FROM {$this->table} s
-                    INNER JOIN inventory_items i ON s.item_id = i.id
-                    LEFT JOIN asset_categories c ON i.category_id = c.id
-                    LEFT JOIN suppliers sup ON i.supplier_id = sup.id
-                    LEFT JOIN warehouses w ON s.warehouse_id = w.id
-                    WHERE s.status = 'active'";
-            
-            $params = [];
-            $countSql = "SELECT COUNT(*) as total 
-                        FROM {$this->table} s 
-                        INNER JOIN inventory_items i ON s.item_id = i.id
-                        WHERE s.status = 'active'";
-            $countParams = [];
-
-            // ເພີ່ມເງື່ອນໄຂການຄົ້ນຫາ
-            if (!empty($filters['search'])) {
-                $sql .= " AND (i.item_code LIKE ? OR i.item_name LIKE ? OR i.barcode LIKE ?)";
-                $searchTerm = "%{$filters['search']}%";
-                $params[] = $searchTerm;
-                $params[] = $searchTerm;
-                $params[] = $searchTerm;
-                
-                $countSql .= " AND (i.item_code LIKE ? OR i.item_name LIKE ? OR i.barcode LIKE ?)";
-                $countParams[] = $searchTerm;
-                $countParams[] = $searchTerm;
-                $countParams[] = $searchTerm;
-            }
-
-            if (!empty($filters['warehouse_id'])) {
-                $sql .= " AND s.warehouse_id = ?";
-                $params[] = $filters['warehouse_id'];
-                
-                $countSql .= " AND s.warehouse_id = ?";
-                $countParams[] = $filters['warehouse_id'];
-            }
-
-            if (!empty($filters['item_id'])) {
-                $sql .= " AND s.item_id = ?";
-                $params[] = $filters['item_id'];
-                
-                $countSql .= " AND s.item_id = ?";
-                $countParams[] = $filters['item_id'];
-            }
-
-            // ເພີ່ມເງື່ອນໄຂສະຖານະສະຕ໋ອກ
-            if (!empty($filters['low_stock']) && $filters['low_stock'] === true) {
-                $sql .= " AND i.reorder_point IS NOT NULL AND s.quantity <= i.reorder_point AND s.quantity > 0";
-                $countSql .= " AND i.reorder_point IS NOT NULL AND s.quantity <= i.reorder_point AND s.quantity > 0";
-            }
-
-            if (!empty($filters['out_of_stock']) && $filters['out_of_stock'] === true) {
-                $sql .= " AND s.quantity <= 0";
-                $countSql .= " AND s.quantity <= 0";
-            }
-
-            if (!empty($filters['overstock']) && $filters['overstock'] === true) {
-                $sql .= " AND i.maximum_stock IS NOT NULL AND s.quantity >= i.maximum_stock";
-                $countSql .= " AND i.maximum_stock IS NOT NULL AND s.quantity >= i.maximum_stock";
-            }
-
-            // ນັບຈຳນວນທັງໝົດ
-            $countStmt = $this->db->prepare($countSql);
-            if (!empty($countParams)) {
-                $countStmt->execute($countParams);
-            } else {
-                $countStmt->execute();
-            }
-            
-            $totalResult = $countStmt->fetch(PDO::FETCH_ASSOC);
-            $total = $totalResult ? (int)$totalResult['total'] : 0;
-
-            // ເພີ່ມການຈັດລຽງ
-            $sortBy = $filters['sort_by'] ?? 's.quantity';
-            $sortOrder = $filters['sort_order'] ?? 'DESC';
-            
-            $allowedSortColumns = [
-                's.quantity', 'i.item_code', 'i.item_name', 
-                's.reserved_quantity', 'i.purchase_price', 'i.selling_price'
-            ];
-            
-            if (!in_array($sortBy, $allowedSortColumns)) {
-                $sortBy = 's.quantity';
-            }
-            
-            $sortOrder = strtoupper($sortOrder) === 'ASC' ? 'ASC' : 'DESC';
-            $sql .= " ORDER BY {$sortBy} {$sortOrder}";
-
-            // ເພີ່ມ LIMIT ແລະ OFFSET
-            $page = isset($filters['page']) ? max(1, (int)$filters['page']) : 1;
-            $limit = isset($filters['limit']) ? (int)$filters['limit'] : 20;
             $offset = ($page - 1) * $limit;
-            
-            $sql .= " LIMIT ? OFFSET ?";
-            $params[] = $limit;
-            $params[] = $offset;
+            $where = [];
+            $params = [];
 
-            error_log("SQL Query: " . $sql);
-            error_log("Params: " . json_encode($params));
+            // Search by Serial, Barcode, or Product Name
+            if (!empty($filters['search'])) {
+                $where[] = "(w.serial_number LIKE :search OR w.barcode LIKE :search OR p.barcode LIKE :search OR p.name LIKE :search)";
+                $params[':search'] = '%' . trim($filters['search']) . '%';
+            }
+
+            // Filter by Barcode directly (scan)
+            if (!empty($filters['barcode'])) {
+                $where[] = "(w.barcode = :barcode OR w.serial_number = :barcode OR p.barcode = :barcode)";
+                $params[':barcode'] = trim($filters['barcode']);
+            }
+
+            // Filter by Product ID
+            if (!empty($filters['product_id'])) {
+                $where[] = "w.product_id = :product_id";
+                $params[':product_id'] = (int)$filters['product_id'];
+            }
+
+            // Filter by Sub Category ID
+            if (!empty($filters['sub_category_id'])) {
+                $where[] = "w.sub_category_id = :sub_category_id";
+                $params[':sub_category_id'] = (int)$filters['sub_category_id'];
+            }
+
+            // Filter by Category ID
+            if (!empty($filters['category_id'])) {
+                $where[] = "s.category_id = :category_id";
+                $params[':category_id'] = (int)$filters['category_id'];
+            }
+
+            // Filter by Status (available, sold, reserved, damaged)
+            if (!empty($filters['status'])) {
+                $where[] = "w.status = :status";
+                $params[':status'] = trim($filters['status']);
+            }
+
+            $whereSql = "";
+            if (!empty($where)) {
+                $whereSql = " WHERE " . implode(" AND ", $where);
+            }
+
+            // Get total count
+            $countSql = "SELECT COUNT(*) 
+                         FROM " . $this->table . " w
+                         LEFT JOIN products p ON w.product_id = p.id
+                         LEFT JOIN sub_categories s ON w.sub_category_id = s.id" . $whereSql;
+            
+            $countStmt = $this->db->prepare($countSql);
+            $countStmt->execute($params);
+            $total = $countStmt->fetchColumn();
+
+            // Get records
+            $sql = "SELECT w.*, p.name as product_name, s.name as sub_category_name, s.category_id, c.name as category_name, u.full_name as creator_name
+                    FROM " . $this->table . " w
+                    LEFT JOIN products p ON w.product_id = p.id
+                    LEFT JOIN sub_categories s ON w.sub_category_id = s.id
+                    LEFT JOIN categories c ON s.category_id = c.id
+                    LEFT JOIN users u ON w.created_by = u.id"
+                    . $whereSql . "
+                    ORDER BY w.id DESC
+                    LIMIT :limit OFFSET :offset";
 
             $stmt = $this->db->prepare($sql);
-            $stmt->execute($params);
-            $stock = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($params as $key => $val) {
+                $stmt->bindValue($key, $val, is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR);
+            }
+            $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', (int)$offset, PDO::PARAM_INT);
+            $stmt->execute();
+            $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Cast float and int types for clean response JSON
+            foreach ($items as &$item) {
+                $item['id'] = (int)$item['id'];
+                $item['product_id'] = (int)$item['product_id'];
+                $item['sub_category_id'] = (int)$item['sub_category_id'];
+                $item['category_id'] = (int)$item['category_id'];
+                $item['purchase_id'] = $item['purchase_id'] !== null ? (int)$item['purchase_id'] : null;
+                $item['width_inch'] = (float)$item['width_inch'];
+                $item['length_ft'] = (float)$item['length_ft'];
+                $item['cubic_ft'] = (float)$item['cubic_ft'];
+                $item['buy_rate'] = (float)$item['buy_rate'];
+                $item['buy_price'] = (float)$item['buy_price'];
+                $item['sell_rate'] = (float)$item['sell_rate'];
+                $item['sell_price'] = (float)$item['sell_price'];
+                $item['qty'] = (int)$item['qty'];
+                $item['created_by'] = $item['created_by'] !== null ? (int)$item['created_by'] : null;
+            }
 
             return [
-                'data' => $stock,
-                'total' => $total,
-                'current_page' => $page,
-                'per_page' => $limit,
-                'last_page' => $total > 0 ? ceil($total / $limit) : 1
+                'items' => $items,
+                'pagination' => [
+                    'total' => (int)$total,
+                    'page' => (int)$page,
+                    'limit' => (int)$limit,
+                    'pages' => ceil($total / $limit)
+                ]
             ];
-            
         } catch (PDOException $e) {
-            error_log("PDO Error in getAllStock: " . $e->getMessage());
-            return [
-                'data' => [],
-                'total' => 0,
-                'current_page' => 1,
-                'per_page' => 20,
-                'last_page' => 1,
-                'error' => $e->getMessage()
-            ];
-        } catch (Exception $e) {
-            error_log("Error in getAllStock: " . $e->getMessage());
-            return [
-                'data' => [],
-                'total' => 0,
-                'current_page' => 1,
-                'per_page' => 20,
-                'last_page' => 1,
-                'error' => $e->getMessage()
-            ];
+            error_log("InventoryStock::list error: " . $e->getMessage());
+            return ['items' => [], 'pagination' => ['total' => 0, 'page' => $page, 'limit' => $limit, 'pages' => 0]];
         }
     }
 
     /**
-     * ດຶງສະຖິຕິສະຕ໋ອກ
+     * Find specific stock item by ID
      */
-    public function getStockStats() {
+    public function findById($id)
+    {
         try {
-            if (!$this->db) {
-                throw new Exception("Database connection not available");
-            }
-
-            $stats = [];
-
-            // ມູນຄ່າລວມ (ຕົ້ນທຶນ) - ໃຊ້ quantity ແທນ current_quantity
-            $costSql = "SELECT COALESCE(SUM(s.quantity * i.purchase_price), 0) as total_cost
-                        FROM {$this->table} s
-                        INNER JOIN inventory_items i ON s.item_id = i.id
-                        WHERE s.status = 'active'";
-            $costStmt = $this->db->query($costSql);
-            $costResult = $costStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['total_cost'] = $costResult ? (float)$costResult['total_cost'] : 0;
-
-            // ມູນຄ່າລວມ (ຂາຍ)
-            $valueSql = "SELECT COALESCE(SUM(s.quantity * i.selling_price), 0) as total_value
-                         FROM {$this->table} s
-                         INNER JOIN inventory_items i ON s.item_id = i.id
-                         WHERE s.status = 'active'";
-            $valueStmt = $this->db->query($valueSql);
-            $valueResult = $valueStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['total_value'] = $valueResult ? (float)$valueResult['total_value'] : 0;
-
-            // ຈຳນວນລາຍການທັງໝົດ
-            $countSql = "SELECT COUNT(*) as total_items FROM {$this->table} WHERE status = 'active'";
-            $countStmt = $this->db->query($countSql);
-            $countResult = $countStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['total_items'] = $countResult ? (int)$countResult['total_items'] : 0;
-
-            // ນັບສິນຄ້າທີ່ໝົດສະຕ໋ອກ
-            $outSql = "SELECT COUNT(*) as out_of_stock FROM {$this->table} WHERE quantity <= 0 AND status = 'active'";
-            $outStmt = $this->db->query($outSql);
-            $outResult = $outStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['out_of_stock'] = $outResult ? (int)$outResult['out_of_stock'] : 0;
-
-            // ນັບສິນຄ້າທີ່ຕໍ່າກວ່າ reorder point
-            $lowSql = "SELECT COUNT(*) as low_stock 
-                       FROM {$this->table} s
-                       INNER JOIN inventory_items i ON s.item_id = i.id
-                       WHERE s.status = 'active'
-                         AND s.quantity > 0 
-                         AND i.reorder_point IS NOT NULL 
-                         AND s.quantity <= i.reorder_point";
-            $lowStmt = $this->db->query($lowSql);
-            $lowResult = $lowStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['low_stock'] = $lowResult ? (int)$lowResult['low_stock'] : 0;
-
-            // ນັບສິນຄ້າທີ່ເກີນ maximum stock
-            $overSql = "SELECT COUNT(*) as overstock 
-                        FROM {$this->table} s
-                        INNER JOIN inventory_items i ON s.item_id = i.id
-                        WHERE s.status = 'active'
-                          AND i.maximum_stock IS NOT NULL 
-                          AND s.quantity >= i.maximum_stock";
-            $overStmt = $this->db->query($overSql);
-            $overResult = $overStmt->fetch(PDO::FETCH_ASSOC);
-            $stats['overstock'] = $overResult ? (int)$overResult['overstock'] : 0;
-
-            return $stats;
-            
-        } catch (Exception $e) {
-            error_log("Error in getStockStats: " . $e->getMessage());
-            return [
-                'total_cost' => 0,
-                'total_value' => 0,
-                'total_items' => 0,
-                'low_stock' => 0,
-                'overstock' => 0,
-                'out_of_stock' => 0
-            ];
-        }
-    }
-
-    /**
-     * ປັບປຸງສະຕ໋ອກ (ໃຊ້ສຳລັບການຊື້ເຂົ້າ)
-     */
-    public function addStock($itemId, $quantity, $warehouseId = 1, $createdBy = null, $location = null, $batchNumber = null, $expiryDate = null) {
-        try {
-            // ກວດສອບວ່າມີ record ຂອງສິນຄ້ານີ້ແລ້ວບໍ
-            $sql = "SELECT id, quantity FROM {$this->table} WHERE item_id = ? AND warehouse_id = ? AND status = 'active'";
+            $sql = "SELECT w.*, p.name as product_name, s.name as sub_category_name, s.category_id, c.name as category_name, u.full_name as creator_name
+                    FROM " . $this->table . " w
+                    LEFT JOIN products p ON w.product_id = p.id
+                    LEFT JOIN sub_categories s ON w.sub_category_id = s.id
+                    LEFT JOIN categories c ON s.category_id = c.id
+                    LEFT JOIN users u ON w.created_by = u.id
+                    WHERE w.id = :id LIMIT 1";
             $stmt = $this->db->prepare($sql);
-            $stmt->execute([$itemId, $warehouseId]);
-            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt->execute([':id' => (int)$id]);
+            $item = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if ($existing) {
-                // ອັບເດດຖ້າມີແລ້ວ
-                $newQuantity = $existing['quantity'] + $quantity;
-                
-                $sql = "UPDATE {$this->table} 
-                        SET quantity = ?,
-                            updated_at = NOW(),
-                            updated_by = ?
-                        WHERE id = ?";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([$newQuantity, $createdBy, $existing['id']]);
-                
-                return [
-                    'success' => true,
-                    'message' => 'ເພີ່ມສະຕ໋ອກສຳເລັດ',
-                    'stock_id' => $existing['id']
-                ];
-            } else {
-                // ສ້າງໃໝ່ຖ້າຍັງບໍ່ມີ
-                $sql = "INSERT INTO {$this->table} 
-                        (item_id, warehouse_id, quantity, reserved_quantity, location, batch_number, expiry_date, status, created_at, created_by) 
-                        VALUES (?, ?, ?, 0, ?, ?, ?, 'active', NOW(), ?)";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([$itemId, $warehouseId, $quantity, $location, $batchNumber, $expiryDate, $createdBy]);
-                
-                return [
-                    'success' => true,
-                    'message' => 'ເພີ່ມສະຕ໋ອກສຳເລັດ',
-                    'stock_id' => $this->db->lastInsertId()
-                ];
+            if ($item) {
+                $item['id'] = (int)$item['id'];
+                $item['product_id'] = (int)$item['product_id'];
+                $item['sub_category_id'] = (int)$item['sub_category_id'];
+                $item['category_id'] = (int)$item['category_id'];
+                $item['purchase_id'] = $item['purchase_id'] !== null ? (int)$item['purchase_id'] : null;
+                $item['width_inch'] = (float)$item['width_inch'];
+                $item['length_ft'] = (float)$item['length_ft'];
+                $item['cubic_ft'] = (float)$item['cubic_ft'];
+                $item['buy_rate'] = (float)$item['buy_rate'];
+                $item['buy_price'] = (float)$item['buy_price'];
+                $item['sell_rate'] = (float)$item['sell_rate'];
+                $item['sell_price'] = (float)$item['sell_price'];
+                $item['qty'] = (int)$item['qty'];
+                $item['created_by'] = $item['created_by'] !== null ? (int)$item['created_by'] : null;
             }
 
-        } catch (Exception $e) {
-            error_log("Error in addStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'ເພີ່ມສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-            ];
+            return $item;
+        } catch (PDOException $e) {
+            error_log("InventoryStock::findById error: " . $e->getMessage());
+            return false;
         }
     }
 
-    // ເພີ່ມຟັງຊັນສຳລັບຮັບສິນຄ້າຈາກ Purchase Order
-    public function receivePurchaseOrder($poId, $items, $userId) {
+    /**
+     * Find first available stock item by Barcode (scan)
+     */
+    public function findByBarcode($barcode)
+    {
         try {
-            $this->db->beginTransaction();
-            $results = [];
-            
-            foreach ($items as $item) {
-                $itemId = $item['item_id'];
-                $quantity = $item['received_quantity'];
-                $warehouseId = $item['warehouse_id'] ?? 1;
-                
-                if (!is_numeric($itemId) || !is_numeric($quantity)) {
-                    error_log("Invalid item data: " . json_encode($item));
-                    continue;
-                }
-                
-                // ເພີ່ມສະຕ໋ອກ
-                $result = $this->addStock($itemId, $quantity, $warehouseId, $userId);
-                $results[] = $result;
+            $sql = "SELECT w.*, p.name as product_name, s.name as sub_category_name, s.category_id, c.name as category_name
+                    FROM " . $this->table . " w
+                    LEFT JOIN products p ON w.product_id = p.id
+                    LEFT JOIN sub_categories s ON w.sub_category_id = s.id
+                    LEFT JOIN categories c ON s.category_id = c.id
+                    WHERE (w.barcode = :barcode1 OR w.serial_number = :barcode2) AND w.status = 'available'
+                    LIMIT 1";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':barcode1' => trim($barcode),
+                ':barcode2' => trim($barcode)
+            ]);
+            $item = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($item) {
+                $item['id'] = (int)$item['id'];
+                $item['product_id'] = (int)$item['product_id'];
+                $item['sub_category_id'] = (int)$item['sub_category_id'];
+                $item['category_id'] = (int)$item['category_id'];
+                $item['purchase_id'] = $item['purchase_id'] !== null ? (int)$item['purchase_id'] : null;
+                $item['width_inch'] = (float)$item['width_inch'];
+                $item['length_ft'] = (float)$item['length_ft'];
+                $item['cubic_ft'] = (float)$item['cubic_ft'];
+                $item['buy_rate'] = (float)$item['buy_rate'];
+                $item['buy_price'] = (float)$item['buy_price'];
+                $item['sell_rate'] = (float)$item['sell_rate'];
+                $item['sell_price'] = (float)$item['sell_price'];
+                $item['qty'] = (int)$item['qty'];
             }
-            
-            $this->db->commit();
-            
-            $success = true;
-            foreach ($results as $result) {
-                if (!$result['success']) {
-                    $success = false;
-                    break;
-                }
-            }
-            
-            return [
-                'success' => $success,
-                'message' => $success ? 'Stock updated successfully' : 'Some items failed to update',
-                'results' => $results
-            ];
-            
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            error_log("Error receiving purchase order: " . $e->getMessage());
-            return ['success' => false, 'message' => $e->getMessage()];
+
+            return $item;
+        } catch (PDOException $e) {
+            echo "PDO ERROR IN FIND BY BARCODE: " . $e->getMessage() . "\n";
+            error_log("InventoryStock::findByBarcode error: " . $e->getMessage());
+            return false;
         }
     }
 
-    // ເພີ່ມຟັງຊັນນີ້ໃນ InventoryStock.php
-
-    public function getStockCounts($itemId = null, $limit = 50) {
+    /**
+     * Check if a serial number is already in use
+     */
+    public function exists($serialNumber, $excludeId = null)
+    {
         try {
-            $sql = "SELECT 
-                        sc.id,
-                        sc.session_id,
-                        sc.item_id,
-                        sc.expected_quantity,
-                        sc.counted_quantity,
-                        sc.variance,
-                        sc.variance_percent,
-                        sc.status,
-                        sc.counted_by,
-                        sc.counted_at,
-                        sc.notes,
-                        i.item_code,
-                        i.item_name,
-                        i.barcode,
-                        CONCAT(u.first_name, ' ', u.last_name) as counted_by_name
-                    FROM stock_count_details sc
-                    LEFT JOIN inventory_items i ON sc.item_id = i.id
-                    LEFT JOIN users u ON sc.counted_by = u.id
-                    WHERE 1=1";
+            $sql = "SELECT id FROM " . $this->table . " WHERE serial_number = :serial_number";
+            $params = [':serial_number' => trim($serialNumber)];
             
-            $params = [];
-            
-            if ($itemId) {
-                $sql .= " AND sc.item_id = ?";
-                $params[] = $itemId;
+            if ($excludeId !== null) {
+                $sql .= " AND id != :exclude_id";
+                $params[':exclude_id'] = (int)$excludeId;
             }
-            
-            $sql .= " ORDER BY sc.counted_at DESC, sc.created_at DESC LIMIT ?";
-            $params[] = $limit;
             
             $stmt = $this->db->prepare($sql);
             $stmt->execute($params);
-            $counts = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            return [
-                'success' => true,
-                'data' => $counts
-            ];
-            
-        } catch (Exception $e) {
-            error_log("Error getting stock counts: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => $e->getMessage(),
-                'data' => []
-            ];
-        }
-    }
-
-    public function getStockCountHistory($itemId = null, $limit = 50) {
-        try {
-            $sql = "SELECT 
-                        sc.id,
-                        sc.session_id,
-                        sc.item_id,
-                        sc.expected_quantity,
-                        sc.counted_quantity,
-                        sc.variance,
-                        sc.variance_percent,
-                        sc.status,
-                        sc.counted_by,
-                        sc.counted_at,
-                        sc.notes,
-                        sc.created_at,
-                        i.item_code,
-                        i.item_name,
-                        i.barcode,
-                        CONCAT(u.first_name, ' ', u.last_name) as counted_by_name
-                    FROM stock_count_details sc
-                    LEFT JOIN inventory_items i ON sc.item_id = i.id
-                    LEFT JOIN users u ON sc.counted_by = u.id
-                    WHERE sc.status = 'counted'";
-            
-            $params = [];
-            
-            if ($itemId) {
-                $sql .= " AND sc.item_id = ?";
-                $params[] = $itemId;
-            }
-            
-            $sql .= " ORDER BY sc.counted_at DESC, sc.created_at DESC LIMIT ?";
-            $params[] = $limit;
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute($params);
-            $counts = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            return $counts;
-            
-        } catch (Exception $e) {
-            error_log("Error getting stock count history: " . $e->getMessage());
-            return [];
-        }
-    }
-
-// ເພີ່ມ method ນີ້ໃນ InventoryStock.php
-
-    /**
-     * ຕັດສະຕ໋ອກເມື່ອມີການຂາຍ
-     */
-    public function deductStock($itemId, $quantity, $referenceId, $referenceType, $notes = '', $createdBy = null) {
-        try {
-            // ຊອກຫາສະຕ໋ອກທີ່ມີຢູ່ (ໃຊ້ warehouse ທຳອິດທີ່ມີສິນຄ້າ)
-            $stmt = $this->db->prepare("
-                SELECT id, quantity, available_quantity 
-                FROM inventory_stocks 
-                WHERE item_id = ? AND status = 'active' AND quantity >= ?
-                ORDER BY id ASC
-                LIMIT 1
-            ");
-            $stmt->execute([$itemId, $quantity]);
-            $stock = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$stock) {
-                return [
-                    'success' => false,
-                    'message' => "ສິນຄ້າມີຈຳນວນບໍ່ພຽງພໍ (ຕ້ອງການ: {$quantity})"
-                ];
-            }
-            
-            // ຕັດສະຕ໋ອກ
-            $newQuantity = $stock['quantity'] - $quantity;
-            $newAvailable = ($stock['available_quantity'] ?? $stock['quantity']) - $quantity;
-            
-            $stmt = $this->db->prepare("
-                UPDATE inventory_stocks 
-                SET quantity = ?,
-                    available_quantity = ?,
-                    updated_by = ?,
-                    updated_at = NOW()
-                WHERE id = ?
-            ");
-            $stmt->execute([$newQuantity, $newAvailable, $createdBy, $stock['id']]);
-            
-            // ບັນທຶກປະຫວັດການເຄື່ອນໄຫວ
-            $this->logStockMovement($itemId, $quantity, $referenceId, $referenceType, 'deduct', $notes, $createdBy);
-            
-            return [
-                'success' => true,
-                'message' => 'ຕັດສະຕ໋ອກສຳເລັດ'
-            ];
-            
-        } catch (Exception $e) {
-            error_log("Error in deductStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'ຕັດສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-            ];
+            return $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            error_log("InventoryStock::exists error: " . $e->getMessage());
+            return false;
         }
     }
 
     /**
-     * ຄືນສະຕ໋ອກເມື່ອຍົກເລີກການຂາຍ
+     * Inherit missing fields from the product template and perform POS calculations
      */
-    public function restoreStock($itemId, $quantity, $referenceId, $referenceType, $notes = '', $createdBy = null) {
-        try {
-            // ຊອກຫາສະຕ໋ອກທີ່ມີຢູ່
-            $stmt = $this->db->prepare("
-                SELECT id, quantity, available_quantity 
-                FROM inventory_stocks 
-                WHERE item_id = ? AND status = 'active'
-                ORDER BY id ASC
-                LIMIT 1
-            ");
-            $stmt->execute([$itemId]);
-            $stock = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$stock) {
-                // ຖ້າບໍ່ມີສະຕ໋ອກ, ສ້າງໃໝ່
-                $stmt = $this->db->prepare("
-                    INSERT INTO inventory_stocks (
-                        item_id, quantity, available_quantity, status, created_by, updated_by, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'active', ?, ?, NOW(), NOW())
-                ");
-                $stmt->execute([$itemId, $quantity, $quantity, $createdBy, $createdBy]);
+    private function calculateAndInheritFields(&$data)
+    {
+        $productId = (int)($data['product_id'] ?? 0);
+        if ($productId > 0) {
+            $productModel = new Product($this->db);
+            $product = $productModel->findById($productId);
+            if ($product) {
+                // Inherit missing fields
+                if (empty($data['barcode'])) {
+                    $data['barcode'] = $product['barcode'];
+                }
+                if (empty($data['sub_category_id'])) {
+                    $data['sub_category_id'] = $product['sub_category_id'];
+                }
+                if (!isset($data['width_inch'])) {
+                    $data['width_inch'] = $product['width_inch'];
+                }
+                if (!isset($data['length_ft'])) {
+                    $data['length_ft'] = $product['length_ft'];
+                }
+                if (!isset($data['buy_rate'])) {
+                    $data['buy_rate'] = $product['buy_rate'];
+                }
+                if (!isset($data['sell_rate'])) {
+                    $data['sell_rate'] = $product['sell_rate'];
+                }
+            }
+        }
+
+        // Calculate Cubic Ft
+        $width = isset($data['width_inch']) ? (float)$data['width_inch'] : 0.0;
+        $length = isset($data['length_ft']) ? (float)$data['length_ft'] : 0.0;
+        
+        if (empty($data['cubic_ft']) || (float)$data['cubic_ft'] == 0.0) {
+            if ($width > 0 && $length > 0) {
+                $data['cubic_ft'] = ($width * $length) / 144.0;
             } else {
-                // ຄືນສະຕ໋ອກ
-                $newQuantity = $stock['quantity'] + $quantity;
-                $newAvailable = ($stock['available_quantity'] ?? $stock['quantity']) + $quantity;
-                
-                $stmt = $this->db->prepare("
-                    UPDATE inventory_stocks 
-                    SET quantity = ?,
-                        available_quantity = ?,
-                        updated_by = ?,
-                        updated_at = NOW()
-                    WHERE id = ?
-                ");
-                $stmt->execute([$newQuantity, $newAvailable, $createdBy, $stock['id']]);
+                $data['cubic_ft'] = 0.0;
             }
-            
-            // ບັນທຶກປະຫວັດການເຄື່ອນໄຫວ
-            $this->logStockMovement($itemId, $quantity, $referenceId, $referenceType, 'restore', $notes, $createdBy);
-            
-            return [
-                'success' => true,
-                'message' => 'ຄືນສະຕ໋ອກສຳເລັດ'
-            ];
-            
-        } catch (Exception $e) {
-            error_log("Error in restoreStock: " . $e->getMessage());
-            return [
-                'success' => false,
-                'message' => 'ຄືນສະຕ໋ອກບໍ່ສຳເລັດ: ' . $e->getMessage()
-            ];
+        }
+        
+        $cubic_ft = (float)$data['cubic_ft'];
+
+        // Auto-calculate Buy Price & Sell Price
+        if (isset($data['buy_rate'])) {
+            $data['buy_price'] = $cubic_ft * (float)$data['buy_rate'];
+        }
+        if (isset($data['sell_rate'])) {
+            $data['sell_price'] = $cubic_ft * (float)$data['sell_rate'];
         }
     }
 
     /**
-     * ບັນທຶກປະຫວັດການເຄື່ອນໄຫວສະຕ໋ອກ
+     * Create stock record
      */
-    private function logStockMovement($itemId, $quantity, $referenceId, $referenceType, $movementType, $notes, $createdBy) {
+    public function create($data)
+    {
         try {
-            // ກວດສອບວ່າມີຕາຕະລາງ stock_movements ບໍ
-            $stmt = $this->db->query("SHOW TABLES LIKE 'stock_movements'");
-            if ($stmt->rowCount() > 0) {
-                $sql = "INSERT INTO stock_movements (
-                            item_id, quantity, movement_type, reference_type, reference_id, 
-                            notes, created_by, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
-                
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([
-                    $itemId,
-                    $quantity,
-                    $movementType,
-                    $referenceType,
-                    $referenceId,
-                    $notes,
-                    $createdBy
-                ]);
+            $this->calculateAndInheritFields($data);
+
+            $sql = "INSERT INTO " . $this->table . " (
+                        serial_number, product_id, barcode, sub_category_id, purchase_id, 
+                        width_inch, length_ft, cubic_ft, buy_rate, buy_price, 
+                        sell_rate, sell_price, status, notes, qty, image, 
+                        created_by, created_at, updated_at
+                    ) VALUES (
+                        :serial_number, :product_id, :barcode, :sub_category_id, :purchase_id, 
+                        :width_inch, :length_ft, :cubic_ft, :buy_rate, :buy_price, 
+                        :sell_rate, :sell_price, :status, :notes, :qty, :image, 
+                        :created_by, NOW(), NOW()
+                    )";
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':serial_number' => trim($data['serial_number']),
+                ':product_id' => (int)$data['product_id'],
+                ':barcode' => $data['barcode'] ?? null,
+                ':sub_category_id' => (int)$data['sub_category_id'],
+                ':purchase_id' => !empty($data['purchase_id']) ? (int)$data['purchase_id'] : null,
+                ':width_inch' => isset($data['width_inch']) ? (float)$data['width_inch'] : 0.0,
+                ':length_ft' => isset($data['length_ft']) ? (float)$data['length_ft'] : 0.0,
+                ':cubic_ft' => (float)$data['cubic_ft'],
+                ':buy_rate' => isset($data['buy_rate']) ? (float)$data['buy_rate'] : 0.0,
+                ':buy_price' => isset($data['buy_price']) ? (float)$data['buy_price'] : 0.0,
+                ':sell_rate' => isset($data['sell_rate']) ? (float)$data['sell_rate'] : 0.0,
+                ':sell_price' => isset($data['sell_price']) ? (float)$data['sell_price'] : 0.0,
+                ':status' => !empty($data['status']) ? trim($data['status']) : 'available',
+                ':notes' => $data['notes'] ?? '',
+                ':qty' => isset($data['qty']) ? (int)$data['qty'] : 1,
+                ':image' => $data['image'] ?? null,
+                ':created_by' => $data['created_by'] ?? null
+            ]);
+
+            return $this->db->lastInsertId();
+        } catch (PDOException $e) {
+            error_log("InventoryStock::create error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Update stock record
+     */
+    public function update($id, $data)
+    {
+        try {
+            $current = $this->findById($id);
+            if (!$current) return false;
+
+            $calcData = array_merge($current, $data);
+            $this->calculateAndInheritFields($calcData);
+
+            if (isset($data['width_inch']) || isset($data['length_ft']) || isset($data['cubic_ft'])) {
+                $data['cubic_ft'] = $calcData['cubic_ft'];
             }
-        } catch (Exception $e) {
-            error_log("Error logging stock movement: " . $e->getMessage());
+            if (isset($data['buy_rate']) || isset($data['cubic_ft']) || isset($data['width_inch']) || isset($data['length_ft'])) {
+                $data['buy_price'] = $calcData['buy_price'];
+            }
+            if (isset($data['sell_rate']) || isset($data['cubic_ft']) || isset($data['width_inch']) || isset($data['length_ft'])) {
+                $data['sell_price'] = $calcData['sell_price'];
+            }
+
+            $fields = "";
+            $params = [':id' => (int)$id];
+
+            $updatableFields = [
+                'serial_number', 'product_id', 'barcode', 'sub_category_id', 'purchase_id',
+                'width_inch', 'length_ft', 'cubic_ft', 'buy_rate', 'buy_price',
+                'sell_rate', 'sell_price', 'status', 'notes', 'qty', 'image'
+            ];
+
+            foreach ($updatableFields as $field) {
+                if (isset($data[$field])) {
+                    $fields .= "$field = :$field, ";
+                    if ($field === 'serial_number' || $field === 'barcode' || $field === 'status' || $field === 'notes' || $field === 'image') {
+                        $params[":$field"] = $data[$field] !== null ? trim($data[$field]) : null;
+                    } elseif ($field === 'product_id' || $field === 'sub_category_id' || $field === 'purchase_id' || $field === 'qty') {
+                        $params[":$field"] = $data[$field] !== null ? (int)$data[$field] : null;
+                    } else {
+                        $params[":$field"] = (float)$data[$field];
+                    }
+                }
+            }
+
+            if (empty($fields)) {
+                return false;
+            }
+
+            $fields = rtrim($fields, ", ");
+            $sql = "UPDATE " . $this->table . " SET " . $fields . ", updated_at = NOW() WHERE id = :id";
+
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute($params);
+        } catch (PDOException $e) {
+            error_log("InventoryStock::update error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Delete stock record
+     */
+    public function delete($id)
+    {
+        try {
+            $stmt = $this->db->prepare("DELETE FROM " . $this->table . " WHERE id = :id");
+            return $stmt->execute([':id' => (int)$id]);
+        } catch (PDOException $e) {
+            error_log("InventoryStock::delete error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Update stock status
+     */
+    public function updateStatus($id, $status)
+    {
+        try {
+            $stmt = $this->db->prepare("UPDATE " . $this->table . " SET status = :status, updated_at = NOW() WHERE id = :id");
+            return $stmt->execute([
+                ':id' => (int)$id,
+                ':status' => trim($status)
+            ]);
+        } catch (PDOException $e) {
+            error_log("InventoryStock::updateStatus error: " . $e->getMessage());
+            return false;
         }
     }
 }

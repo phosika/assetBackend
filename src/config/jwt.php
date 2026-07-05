@@ -9,11 +9,9 @@ if (!$jwtSecret) {
 }
 
 return [
-    'secret_key' => $jwtSecret,
+    'secret_key' => 'your-super-secret-key-change-this-in-production',
     'algorithm' => 'HS256',
-    'access_token_expiry' => 86400, // 24 ຊົ່ວໂມງ (ວິນາທີ) - ເພີ່ມເວລາເພື່ອ debug
-    'refresh_token_expiry' => 604800, // 7 ວັນ
-    'issuer' => 'myapi.local',
-    'audience' => 'myapi-client'
+    'expiry' => 3600, // 1 ຊົ່ວໂມງ
+    'refresh_expiry' => 86400, // 24 ຊົ່ວໂມງ
 ];
 ?>

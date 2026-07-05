@@ -2,74 +2,137 @@
 // src/utils/Validator.php
 
 class Validator {
-    private $errors = [];
+    
 
-    public function validate($data, $rules) {
-        $this->errors = [];
 
-        foreach ($rules as $field => $rule) {
-            $rulesList = explode('|', $rule);
+public static function validate($data, $rules) {
+    error_log("=== VALIDATOR START ===");
+    error_log("Data: " . print_r($data, true));
+    error_log("Rules: " . print_r($rules, true));
+    
+    $errors = [];
+    
+    foreach ($rules as $field => $rule) {
+        $rulesList = explode('|', $rule);
+        $value = $data[$field] ?? null;
+        
+        error_log("Validating field: $field, value: " . ($value ?? 'null'));
+        
+        $isEmpty = ($value === null || $value === '' || (is_array($value) && empty($value)));
+        
+        foreach ($rulesList as $singleRule) {
+            // ກວດສອບ required
+            if ($singleRule === 'required') {
+                if ($isEmpty) {
+                    $errors[$field][] = ucfirst($field) . ' is required';
+                    error_log("Validation failed: $field is required");
+                    continue;
+                }
+            }
             
-            foreach ($rulesList as $singleRule) {
-                $this->validateField($field, $data[$field] ?? null, $singleRule, $data);
+            // ຂ້າມການກວດສອບຖ້າບໍ່ມີຄ່າ ແລະ ບໍ່ແມ່ນ required
+            if ($isEmpty && $singleRule !== 'required') {
+                continue;
             }
-        }
-
-        return empty($this->errors);
-    }
-
-    private function validateField($field, $value, $rule, $data = []) {
-        // ກວດສອບ required
-        if ($rule === 'required' && (is_null($value) || $value === '')) {
-            $this->errors[$field][] = "The {$field} field is required";
-        }
-
-        // ກວດສອບ string
-        if ($rule === 'string' && !is_null($value) && !is_string($value)) {
-            $this->errors[$field][] = "The {$field} must be a string";
-        }
-
-        // ກວດສອບ integer
-        if ($rule === 'integer' && !is_null($value) && !is_numeric($value)) {
-            $this->errors[$field][] = "The {$field} must be an integer";
-        }
-
-        // ກວດສອບ email
-        if ($rule === 'email' && !is_null($value) && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
-            $this->errors[$field][] = "The {$field} must be a valid email";
-        }
-
-        // ກວດສອບ min length
-        if (strpos($rule, 'min:') === 0) {
-            $min = explode(':', $rule)[1];
-            if (!is_null($value) && strlen($value) < $min) {
-                $this->errors[$field][] = "The {$field} must be at least {$min} characters";
+            
+            // string
+            if ($singleRule === 'string' && !is_string($value)) {
+                $errors[$field][] = ucfirst($field) . ' must be a string';
+                error_log("Validation failed: $field must be a string");
             }
-        }
 
-        // ກວດສອບ max length
-        if (strpos($rule, 'max:') === 0) {
-            $max = explode(':', $rule)[1];
-            if (!is_null($value) && strlen($value) > $max) {
-                $this->errors[$field][] = "The {$field} may not be greater than {$max} characters";
+            // numeric
+            if ($singleRule === 'numeric' && !is_numeric($value)) {
+                $errors[$field][] = ucfirst($field) . ' must be a number';
+                error_log("Validation failed: $field must be a number");
             }
-        }
-
-        // ກວດສອບ in array
-        if (strpos($rule, 'in:') === 0) {
-            $allowedValues = explode(',', str_replace('in:', '', $rule));
-            if (!is_null($value) && !in_array($value, $allowedValues)) {
-                $this->errors[$field][] = "The {$field} must be one of: " . implode(', ', $allowedValues);
+            
+            // min
+            if (strpos($singleRule, 'min:') === 0) {
+                $min = (int)substr($singleRule, 4);
+                if (strlen($value) < $min) {
+                    $errors[$field][] = ucfirst($field) . ' must be at least ' . $min . ' characters';
+                    error_log("Validation failed: $field must be at least $min characters");
+                }
+            }
+            
+            // max
+            if (strpos($singleRule, 'max:') === 0) {
+                $max = (int)substr($singleRule, 4);
+                if (strlen($value) > $max) {
+                    $errors[$field][] = ucfirst($field) . ' must not exceed ' . $max . ' characters';
+                    error_log("Validation failed: $field must not exceed $max characters");
+                }
+            }
+            
+            // email
+            if ($singleRule === 'email' && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                $errors[$field][] = ucfirst($field) . ' must be a valid email address';
+                error_log("Validation failed: $field must be a valid email");
+            }
+            
+            // in
+            if (strpos($singleRule, 'in:') === 0) {
+                $allowed = explode(',', substr($singleRule, 3));
+                if (!in_array($value, $allowed)) {
+                    $errors[$field][] = ucfirst($field) . ' must be one of: ' . implode(', ', $allowed);
+                    error_log("Validation failed: $field must be one of: " . implode(', ', $allowed));
+                }
             }
         }
     }
-
-    public function fails() {
-        return !empty($this->errors);
-    }
-
-    public function errors() {
-        return $this->errors;
+    
+    error_log("Validation errors: " . print_r($errors, true));
+    return $errors;
+}
+    
+    private static function applyRule($field, $value, $rule, $parameter) {
+        switch ($rule) {
+            case 'required':
+                if ($value === null || $value === '') {
+                    return "The {$field} field is required";
+                }
+                break;
+                
+            case 'string':
+                if ($value !== null && !is_string($value)) {
+                    return "The {$field} must be a string";
+                }
+                break;
+                
+            case 'min':
+                if (strlen($value) < $parameter) {
+                    return "The {$field} must be at least {$parameter} characters";
+                }
+                break;
+                
+            case 'max':
+                if (strlen($value) > $parameter) {
+                    return "The {$field} must not exceed {$parameter} characters";
+                }
+                break;
+                
+            case 'email':
+                if ($value !== null && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                    return "The {$field} must be a valid email address";
+                }
+                break;
+                
+            case 'in':
+                $allowed = explode(',', $parameter);
+                if (!in_array($value, $allowed)) {
+                    return "The {$field} must be one of: " . implode(', ', $allowed);
+                }
+                break;
+                
+            case 'numeric':
+                if (!is_numeric($value)) {
+                    return "The {$field} must be a number";
+                }
+                break;
+        }
+        
+        return null;
     }
 }
 ?>

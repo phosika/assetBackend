@@ -37,17 +37,19 @@ class Config {
                 $name = trim($parts[0]);
                 $value = trim($parts[1]);
                 
-                self::$env[$name] = $value;
-                putenv("$name=$value");
-                $_ENV[$name] = $value;
+                self::$env[$name] = trim($value, "\"'");
+                $_ENV[$name] = trim($value, "\"'");
+                if (function_exists('putenv')) {
+                    @putenv("$name=" . trim($value, "\"'"));
+                }
             }
         }
     }
     
     public static function get($key, $default = null) {
-        // ກວດສອບຈາກ environment variables ກ່ອນ
-        $envValue = getenv($key);
-        if ($envValue !== false) {
+        // ກວດສອບຈາກ environment variables ກ່ອນ (Check $_ENV first, then getenv)
+        $envValue = $_ENV[$key] ?? $_SERVER[$key] ?? (function_exists('getenv') ? getenv($key) : false);
+        if ($envValue !== false && $envValue !== null) {
             return $envValue;
         }
         

@@ -7,7 +7,7 @@ class Database {
     private function __construct() {
         try {
             $host = getenv('DB_HOST') ?: 'db';
-            $dbname = getenv('DB_NAME') ?: 'asset_db';
+            $dbname = getenv('DB_NAME') ?: 'suvinhome_db';
             $user = getenv('DB_USER') ?: 'root';
             $pass = getenv('DB_PASSWORD') ?: 'My_root_passw0rd@!2o26';
 

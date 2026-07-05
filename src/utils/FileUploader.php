@@ -5,6 +5,17 @@ class FileUploader {
     private $uploadDir;
     private $baseUrl;
 
+    public function __construct() {
+        // Resolve upload dir: D:\suvinhome\src/uploads
+        $this->uploadDir = __DIR__ . '/../uploads';
+        $this->createDirectoryIfNotExists($this->uploadDir);
+        
+        // Resolve base URL dynamically
+        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost:8081';
+        $this->baseUrl = "$protocol://$host/uploads";
+    }
+
     private function createDirectoryIfNotExists($path) {
         if (!file_exists($path)) {
             // ລອງສ້າງໂຟນເດີ
@@ -22,6 +33,23 @@ class FileUploader {
     }
 
     public function upload($file, $options = []) {
+        // Handle if options is a string (e.g. 'uploads/avatars/' or 'uploads/products/')
+        $subDir = '';
+        if (is_string($options)) {
+            $subDir = $options;
+            $options = [];
+        } elseif (isset($options['upload_dir'])) {
+            $subDir = $options['upload_dir'];
+        }
+
+        // Clean up subDir. If it starts with 'uploads/', remove it because uploadDir is already .../uploads
+        if (!empty($subDir)) {
+            if (strpos($subDir, 'uploads/') === 0) {
+                $subDir = substr($subDir, 8);
+            }
+            $subDir = trim($subDir, '/');
+        }
+
         $allowedTypes = $options['allowed_types'] ?? [
             'image/jpeg', 'image/png', 'image/gif', 'image/webp',
             'application/pdf'
@@ -31,7 +59,7 @@ class FileUploader {
         $prefix = $options['prefix'] ?? 'file';
 
         if (!isset($file) || $file['error'] !== UPLOAD_ERR_OK) {
-            return ['success' => false, 'message' => 'No file uploaded'];
+            return ['success' => false, 'message' => 'No file uploaded or upload error'];
         }
 
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
@@ -46,17 +74,27 @@ class FileUploader {
             return ['success' => false, 'message' => 'File size exceeds limit'];
         }
 
+        $targetDir = $this->uploadDir;
+        if (!empty($subDir)) {
+            $targetDir = $this->uploadDir . '/' . $subDir;
+        }
+        $this->createDirectoryIfNotExists($targetDir);
+
         $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
         $filename = $prefix . '_' . time() . '_' . uniqid() . '.' . $extension;
-        $filepath = $this->uploadDir . '/' . $filename;
+        $filepath = $targetDir . '/' . $filename;
 
         if (move_uploaded_file($file['tmp_name'], $filepath)) {
             chmod($filepath, 0644);
             
+            // Relative URL for DB storage, e.g. "uploads/avatars/filename.jpg"
+            $relativeUrl = 'uploads/' . ($subDir ? $subDir . '/' : '') . $filename;
+            $url = $this->baseUrl . '/' . ($subDir ? $subDir . '/' : '') . $filename;
+            
             return [
                 'success' => true,
-                'path' => $filepath,
-                'url' => $this->baseUrl . '/' . $filename,
+                'path' => $relativeUrl,
+                'url' => $url,
                 'filename' => $filename
             ];
         } else {

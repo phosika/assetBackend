@@ -1,538 +1,366 @@
 <?php
- 
-
+// src/controllers/InventoryStockController.php
 require_once __DIR__ . '/../models/InventoryStock.php';
-require_once __DIR__ . '/../models/User.php';
 require_once __DIR__ . '/../middleware/AuthMiddleware.php';
 require_once __DIR__ . '/../utils/Response.php';
+require_once __DIR__ . '/../utils/Validator.php';
 
-class InventoryStockController {
-    private $stockModel;
-    private $userModel;
- 
-    public function __construct() {
-        $this->stockModel = new InventoryStock();
-        $this->userModel = new User();
- 
+class InventoryStockController
+{
+    private $inventoryStockModel;
+
+    public function __construct($db)
+    {
+        $this->inventoryStockModel = new InventoryStock($db);
     }
 
-    /**
-     * ດຶງຂໍ້ມູນຜູ້ໃຊ້ປັດຈຸບັນ
-     */
-    private function getCurrentUser() {
-        try {
-            $userPayload = AuthMiddleware::authenticate();
-            if (!$userPayload) {
-                return null;
-            }
-            $userId = $userPayload['user_id'];
-            $user = $this->userModel->getById($userId);
-            return $user;
-        } catch (Exception $e) {
-            error_log("Auth error: " . $e->getMessage());
-            return null;
+    private function getRequestData()
+    {
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') !== false) {
+            $input = file_get_contents('php://input');
+            return json_decode($input, true) ?? [];
         }
+        return $_POST;
     }
 
-    /**
-     * ກວດສອບສິດຜູ້ເບິ່ງແຍງລະບົບ
-     */
-    private function checkAdminPermission($user) {
-        if (!$user || !in_array($user['role'] ?? '', ['super_admin', 'asset_admin'])) {
-            Response::forbidden('You do not have permission to perform this action');
+    private function handleImageUpload($file)
+    {
+        if (!isset($file) || $file['error'] !== UPLOAD_ERR_OK) {
+            return ['success' => false, 'message' => 'No file uploaded or upload error'];
         }
-    }
 
-    // ==================== STOCK ENDPOINTS ====================
-
-    /**
-     * GET /inventory/stock - ດຶງຂໍ້ມູນສະຕ໋ອກທັງໝົດ
-     */
-    public function getAllStock() {
-        try {
-            // ກວດສອບການຢືນຢັນຕົວຕົນ (ບໍ່ບັງຄັບ)
-            // $currentUser = $this->getCurrentUser();
-            
-            // ກະກຽມ filters
-            $filters = [
-                'search' => isset($_GET['search']) ? trim($_GET['search']) : '',
-                'warehouse_id' => isset($_GET['warehouse_id']) && $_GET['warehouse_id'] !== '' ? (int)$_GET['warehouse_id'] : null,
-                'item_id' => isset($_GET['item_id']) && $_GET['item_id'] !== '' ? (int)$_GET['item_id'] : null,
-                'low_stock' => isset($_GET['low_stock']) && ($_GET['low_stock'] === 'true' || $_GET['low_stock'] === '1'),
-                'out_of_stock' => isset($_GET['out_of_stock']) && ($_GET['out_of_stock'] === 'true' || $_GET['out_of_stock'] === '1'),
-                'overstock' => isset($_GET['overstock']) && ($_GET['overstock'] === 'true' || $_GET['overstock'] === '1'),
-                'page' => isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1,
-                'limit' => isset($_GET['limit']) ? (int)$_GET['limit'] : 20,
-                'sort_by' => isset($_GET['sort_by']) ? $_GET['sort_by'] : 's.current_quantity',
-                'sort_order' => isset($_GET['sort_order']) ? strtoupper($_GET['sort_order']) : 'DESC'
-            ];
-
-            // ຈຳກັດ limit ສູງສຸດ
-            if ($filters['limit'] > 100) {
-                $filters['limit'] = 100;
-            }
-
-            error_log("Fetching stock with filters: " . json_encode($filters));
-            
-            $result = $this->stockModel->getAllStock($filters);
-            
-            error_log("Stock result count: " . count($result['data']));
-
-            // ກວດສອບວ່າມີ error ບໍ
-            if (isset($result['error'])) {
-                Response::error('Database error: ' . $result['error'], 500);
-                return;
-            }
-
-            Response::success([
-                'stock' => $result['data'],
-                'pagination' => [
-                    'current_page' => $result['current_page'],
-                    'per_page' => $result['per_page'],
-                    'total' => $result['total'],
-                    'total_pages' => $result['last_page']
-                ]
-            ], 'Stock retrieved successfully');
-            
-        } catch (Exception $e) {
-            error_log("Error in getAllStock: " . $e->getMessage());
-            Response::error('Failed to retrieve stock: ' . $e->getMessage(), 500);
+        if ($file['size'] > 5 * 1024 * 1024) {
+            return ['success' => false, 'message' => 'Image file size too large. Max 5MB'];
         }
-    }
 
-    /**
-     * GET /inventory/stock/stats - ດຶງສະຖິຕິສະຕ໋ອກ
-     */
-    public function getStockStats() {
-        try {
-            // $currentUser = $this->getCurrentUser();
-            
-            $stats = $this->stockModel->getStockStats();
-            
-            Response::success($stats, 'Stock statistics retrieved successfully');
-        } catch (Exception $e) {
-            error_log("Error in getStockStats: " . $e->getMessage());
-            Response::error('Failed to retrieve statistics: ' . $e->getMessage(), 500);
+        $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mimeType = finfo_file($finfo, $file['tmp_name']);
+        finfo_close($finfo);
+
+        if (!in_array($mimeType, $allowedTypes)) {
+            return ['success' => false, 'message' => 'Invalid image format. Allowed: JPEG, PNG, GIF, WEBP'];
         }
+
+        $uploadDir = __DIR__ . '/../../uploads/assets';
+        if (!file_exists($uploadDir)) {
+            mkdir($uploadDir, 0777, true);
+        }
+
+        $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $filename = 'stock_' . time() . '_' . uniqid() . '.' . $extension;
+        $targetPath = $uploadDir . '/' . $filename;
+        $dbPath = 'uploads/assets/' . $filename;
+
+        if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+            chmod($targetPath, 0644);
+            return ['success' => true, 'path' => $dbPath];
+        }
+
+        return ['success' => false, 'message' => 'Failed to save uploaded file'];
     }
 
     /**
-     * GET /inventory/stock/movements - ດຶງປະຫວັດການເຄື່ອນໄຫວ
+     * GET /inventory-stocks
      */
-    public function getMovements() {
+    public function listStocks($page = 1, $limit = 10)
+    {
         try {
-            // $currentUser = $this->getCurrentUser();
+            $currentUser = AuthMiddleware::check();
+            if (!$currentUser) return;
 
             $filters = [
-                'item_id' => isset($_GET['item_id']) ? (int)$_GET['item_id'] : null,
-                'movement_type' => $_GET['movement_type'] ?? null,
-                'from_date' => $_GET['from_date'] ?? null,
-                'to_date' => $_GET['to_date'] ?? null,
-                'page' => isset($_GET['page']) ? (int)$_GET['page'] : 1,
-                'limit' => isset($_GET['limit']) ? (int)$_GET['limit'] : 50
+                'search' => $_GET['search'] ?? '',
+                'barcode' => $_GET['barcode'] ?? '',
+                'product_id' => $_GET['product_id'] ?? null,
+                'category_id' => $_GET['category_id'] ?? null,
+                'sub_category_id' => $_GET['sub_category_id'] ?? null,
+                'status' => $_GET['status'] ?? ''
             ];
 
-            $movements = $this->stockModel->getMovements($filters);
-
-            Response::success([
-                'movements' => $movements,
-                'total' => count($movements)
-            ], 'Movements retrieved successfully');
+            $result = $this->inventoryStockModel->list($page, $limit, $filters);
+            return Response::json($result, 200);
         } catch (Exception $e) {
-            error_log("Error in getMovements: " . $e->getMessage());
-            Response::error('Failed to retrieve movements: ' . $e->getMessage(), 500);
+            error_log("InventoryStockController::listStocks error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred'], 500);
         }
     }
 
     /**
-     * GET /inventory/stock/counts - ດຶງປະຫວັດການນັບສະຕ໋ອກ
+     * GET /inventory-stocks/{id}
      */
- 
-    public function getStockCounts() {
+    public function getStock($id)
+    {
         try {
-            $itemId = isset($_GET['item_id']) ? (int)$_GET['item_id'] : null;
-            $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
-            
-            $inventoryStock = new InventoryStock();
-            $counts = $inventoryStock->getStockCountHistory($itemId, $limit);
-            
-            Response::success([
-                'counts' => $counts
-            ], 200, 'Stock counts retrieved successfully');
-            
-        } catch (Exception $e) {
-            error_log("Error getting stock counts: " . $e->getMessage());
-            Response::error('Failed to get stock counts: ' . $e->getMessage(), 500);
-        }
-    }
+            $currentUser = AuthMiddleware::check();
+            if (!$currentUser) return;
 
-    /**
-     * GET /inventory/stock/counts/summary - ດຶງລາຍງານສະຫຼຸບການນັບ
-     */
-    public function getStockCountSummary() {
-        try {
-            // $currentUser = $this->getCurrentUser();
-
-            $fromDate = $_GET['from_date'] ?? null;
-            $toDate = $_GET['to_date'] ?? null;
-
-            $summary = $this->stockModel->getStockCountSummary($fromDate, $toDate);
-
-            Response::success($summary, 'Stock count summary retrieved successfully');
-        } catch (Exception $e) {
-            error_log("Error in getStockCountSummary: " . $e->getMessage());
-            Response::error('Failed to retrieve stock count summary: ' . $e->getMessage(), 500);
-        }
-    }
-
-    /**
-     * GET /inventory/stock/by-item/{itemId} - ດຶງສະຕ໋ອກຕາມສິນຄ້າ
-     */
-    public function getStockByItem($itemId) {
-        try {
-            error_log("=== getStockByItem ===");
-            error_log("Item ID: $itemId");
-            
-            // ກວດສອບ authentication
-            $userId = AuthMiddleware::authenticate();
-            
-            // ດຶງ warehouse_id ຈາກ query parameter
-            $warehouseId = isset($_GET['warehouse_id']) ? (int)$_GET['warehouse_id'] : null;
-            error_log("Warehouse ID: " . ($warehouseId ?? 'ALL'));
-            
-            // ດຶງຂໍ້ມູນສະຕ໋ອກ
-            $stock = $this->stockModel->getStockByItem($itemId, $warehouseId);
-            
-            if ($stock) {
-                Response::success($stock, 200, 'Stock retrieved successfully');
-            } else {
-                Response::error('Stock not found', 404);
-            }
-            
-        } catch (Exception $e) {
-            error_log("Error in getStockByItem: " . $e->getMessage());
-            Response::error('Failed to retrieve stock: ' . $e->getMessage(), 500);
-        }
-    }
-
-    /**
-     * GET /inventory/stock/{id} - ດຶງຂໍ້ມູນສະຕ໋ອກຕາມ ID
-     */
-    public function getStockById($id) {
-        try {
-            // $currentUser = $this->getCurrentUser();
-
-            if (!is_numeric($id)) {
-                Response::error('Invalid stock ID', 400);
-                return;
+            if (empty($id) || !is_numeric($id)) {
+                return Response::json(['message' => 'Invalid ID'], 400);
             }
 
-            $stock = $this->stockModel->getStockById($id);
-
-            if (!$stock) {
-                Response::notFound('Stock not found');
-                return;
+            $item = $this->inventoryStockModel->findById((int)$id);
+            if (!$item) {
+                return Response::json(['message' => 'Inventory record not found'], 404);
             }
 
-            Response::success($stock, 'Stock retrieved successfully');
+            return Response::json($item, 200);
         } catch (Exception $e) {
-            error_log("Error in getStockById: " . $e->getMessage());
-            Response::error('Failed to retrieve stock: ' . $e->getMessage(), 500);
+            error_log("InventoryStockController::getStock error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred'], 500);
         }
     }
 
     /**
-     * POST /inventory/stock/adjust - ປັບປຸງສະຕ໋ອກ
+     * GET /inventory-stocks/barcode/{barcode}
+     * Retrieve first available stock item by barcode (scan)
      */
-    public function adjustStock() {
+    public function getStockByBarcode($barcode)
+    {
         try {
-            $currentUser = $this->getCurrentUser();
-            $this->checkAdminPermission($currentUser);
-            
-            $data = json_decode(file_get_contents('php://input'), true);
+            $currentUser = AuthMiddleware::check();
+            if (!$currentUser) return;
 
-            if (!isset($data['item_id']) || !isset($data['quantity'])) {
-                Response::error('Item ID and quantity are required', 400);
-                return;
+            if (empty($barcode)) {
+                return Response::json(['message' => 'Barcode is required'], 400);
             }
 
-            $type = $data['type'] ?? ($data['quantity'] > 0 ? 'add' : 'subtract');
-            $quantity = abs($data['quantity']);
-            
-            $reference = [
-                'warehouse_id' => $data['warehouse_id'] ?? 1,
-                'type' => $data['reference_type'] ?? 'adjustment',
-                'id' => $data['reference_id'] ?? null,
-                'notes' => $data['notes'] ?? null
+            $item = $this->inventoryStockModel->findByBarcode($barcode);
+            if (!$item) {
+                return Response::json(['message' => 'No available stock item found for this barcode'], 404);
+            }
+
+            return Response::json($item, 200);
+        } catch (Exception $e) {
+            error_log("InventoryStockController::getStockByBarcode error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred'], 500);
+        }
+    }
+
+    /**
+     * POST /inventory-stocks
+     */
+    public function createStock()
+    {
+        try {
+            $currentUser = AuthMiddleware::authenticate(['admin', 'manager', 'warehouse_staff']);
+            if (!$currentUser) return;
+
+            $data = $this->getRequestData();
+
+            $rules = [
+                'serial_number' => 'required|string|max:100',
+                'product_id' => 'required|numeric',
+                'purchase_id' => 'numeric',
+                'width_inch' => 'numeric',
+                'length_ft' => 'numeric',
+                'cubic_ft' => 'numeric',
+                'buy_rate' => 'numeric',
+                'sell_rate' => 'numeric',
+                'status' => 'string|in:available,sold,reserved,damaged',
+                'qty' => 'numeric'
             ];
 
-            $result = $this->stockModel->adjustStock(
-                $data['item_id'],
-                $quantity,
-                $type,
-                $reference,
-                $currentUser['id'] ?? null
-            );
-
-            if ($result['success']) {
-                Response::success($result, $result['message']);
-            } else {
-                Response::error($result['message'], 400);
-            }
-        } catch (Exception $e) {
-            error_log("Error in adjustStock: " . $e->getMessage());
-            Response::error('Failed to adjust stock: ' . $e->getMessage(), 500);
-        }
-    }
-
-    public function loanStock() {
-        try {
-            $currentUser = $this->getCurrentUser();
-            if (!$currentUser) {
-                Response::unauthorized('Authentication required');
-                return;
+            $errors = Validator::validate($data, $rules);
+            if (!empty($errors)) {
+                return Response::json(['errors' => $errors], 422);
             }
 
-            $data = json_decode(file_get_contents('php://input'), true);
-            if (!isset($data['item_id']) || !isset($data['quantity'])) {
-                Response::error('Item ID and quantity are required', 400);
-                return;
+            // Check unique serial number
+            if ($this->inventoryStockModel->exists($data['serial_number'])) {
+                return Response::json(['message' => 'Serial number already exists'], 409);
             }
 
-            $quantity = abs($data['quantity']);
-            if ($quantity <= 0) {
-                Response::error('Quantity must be greater than zero', 400);
-                return;
-            }
-
-            $warehouseId = $data['warehouse_id'] ?? 1;
-            $stockRows = $this->stockModel->getStockByItemId($data['item_id'], $warehouseId);
-            $stockRow = is_array($stockRows) && count($stockRows) ? $stockRows[0] : null;
-
-            if (!$stockRow || $stockRow['current_quantity'] < $quantity) {
-                Response::error('Insufficient stock for loan', 400);
-                return;
-            }
-
-            $reference = [
-                'warehouse_id' => $warehouseId,
-                'type' => 'loan',
-                'id' => $data['reference_id'] ?? null,
-                'notes' => $data['notes'] ?? null
-            ];
-
-            $result = $this->stockModel->adjustStock(
-                $data['item_id'],
-                $quantity,
-                'subtract',
-                $reference,
-                $currentUser['id']
-            );
-
-            if ($result['success']) {
-                Response::success($result, 'Stock loaned successfully');
-            } else {
-                Response::error($result['message'], 400);
-            }
-        } catch (Exception $e) {
-            error_log("Error in loanStock: " . $e->getMessage());
-            Response::error('Failed to loan stock: ' . $e->getMessage(), 500);
-        }
-    }
-
-    public function returnStock() {
-        try {
-            $currentUser = $this->getCurrentUser();
-            if (!$currentUser) {
-                Response::unauthorized('Authentication required');
-                return;
-            }
-
-            $data = json_decode(file_get_contents('php://input'), true);
-            if (!isset($data['item_id']) || !isset($data['quantity'])) {
-                Response::error('Item ID and quantity are required', 400);
-                return;
-            }
-
-            $quantity = abs($data['quantity']);
-            if ($quantity <= 0) {
-                Response::error('Quantity must be greater than zero', 400);
-                return;
-            }
-
-            $warehouseId = $data['warehouse_id'] ?? 1;
-            $reference = [
-                'warehouse_id' => $warehouseId,
-                'type' => 'return',
-                'id' => $data['reference_id'] ?? null,
-                'notes' => $data['notes'] ?? null
-            ];
-
-            $result = $this->stockModel->adjustStock(
-                $data['item_id'],
-                $quantity,
-                'add',
-                $reference,
-                $currentUser['id']
-            );
-
-            if ($result['success']) {
-                Response::success($result, 'Stock returned successfully');
-            } else {
-                Response::error($result['message'], 400);
-            }
-        } catch (Exception $e) {
-            error_log("Error in returnStock: " . $e->getMessage());
-            Response::error('Failed to return stock: ' . $e->getMessage(), 500);
-        }
-    }
-
-    /**
-     * GET /inventory/stock/loan-history - ດຶງປະຫວັດການຢືມ-ຄືນສະຕ໋ອກ
-     */
-    public function getLoanHistory() {
-        try {
-            $currentUser = $this->getCurrentUser();
-            if (!$currentUser) {
-                Response::unauthorized('Authentication required');
-                return;
-            }
-
-            $filters = [];
-            
-            // ກວດສອບ parameters ຈາກ query string
-            if (!empty($_GET['user_id'])) {
-                $filters['user_id'] = $_GET['user_id'];
-            }
-            
-            if (!empty($_GET['item_id'])) {
-                $filters['item_id'] = $_GET['item_id'];
-            }
-            
-            if (!empty($_GET['start_date'])) {
-                $filters['start_date'] = $_GET['start_date'];
-            }
-            
-            if (!empty($_GET['end_date'])) {
-                $filters['end_date'] = $_GET['end_date'];
-            }
-            
-            if (!empty($_GET['movement_type'])) {
-                $filters['movement_type'] = $_GET['movement_type'];
-            }
-
-            $history = $this->stockModel->getLoanHistory($filters);
-            
-            Response::success($history, 'Loan history retrieved successfully');
-        } catch (Exception $e) {
-            error_log("Error in getLoanHistory: " . $e->getMessage());
-            Response::error('Failed to retrieve loan history: ' . $e->getMessage(), 500);
-        }
-    }
-
-    /**
-     * POST /inventory/stock/transfer - ໂອນສະຕ໋ອກ
-     */
-    public function transferStock() {
-        try {
-            $currentUser = $this->getCurrentUser();
-            $this->checkAdminPermission($currentUser);
-            
-            $data = json_decode(file_get_contents('php://input'), true);
-
-            $required = ['item_id', 'from_warehouse', 'to_warehouse', 'quantity'];
-            foreach ($required as $field) {
-                if (!isset($data[$field])) {
-                    Response::error("{$field} is required", 400);
-                    return;
+            // Handle image upload if provided
+            if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
+                $uploadResult = $this->handleImageUpload($_FILES['image']);
+                if ($uploadResult['success']) {
+                    $data['image'] = $uploadResult['path'];
+                } else {
+                    return Response::json(['message' => $uploadResult['message']], 400);
                 }
             }
 
-            $result = $this->stockModel->transferStock(
-                $data['item_id'],
-                $data['from_warehouse'],
-                $data['to_warehouse'],
-                $data['quantity'],
-                $data['notes'] ?? null,
-                $currentUser['id'] ?? null
-            );
+            $data['created_by'] = $currentUser['id'];
+            $newId = $this->inventoryStockModel->create($data);
 
-            if ($result['success']) {
-                Response::success(null, $result['message']);
-            } else {
-                Response::error($result['message'], 400);
+            if (!$newId) {
+                return Response::json(['message' => 'Failed to create inventory stock record'], 500);
             }
+
+            $newRecord = $this->inventoryStockModel->findById($newId);
+            return Response::json([
+                'message' => 'Inventory stock record created successfully',
+                'data' => $newRecord
+            ], 201);
+
         } catch (Exception $e) {
-            error_log("Error in transferStock: " . $e->getMessage());
-            Response::error('Failed to transfer stock: ' . $e->getMessage(), 500);
+            error_log("InventoryStockController::createStock error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred: ' . $e->getMessage()], 500);
         }
     }
 
     /**
-     * POST /inventory/stock/count - ບັນທຶກການນັບສະຕ໋ອກ
+     * PUT/POST /inventory-stocks/{id}
      */
-    public function recordStockCount() {
+    public function updateStock($id)
+    {
         try {
-            $currentUser = $this->getCurrentUser();
-            $this->checkAdminPermission($currentUser);
-            
-            $data = json_decode(file_get_contents('php://input'), true);
+            $currentUser = AuthMiddleware::authenticate(['admin', 'manager', 'warehouse_staff']);
+            if (!$currentUser) return;
 
-            if (!isset($data['item_id']) || !isset($data['actual_quantity'])) {
-                Response::error('Item ID and actual quantity are required', 400);
-                return;
+            if (empty($id) || !is_numeric($id)) {
+                return Response::json(['message' => 'Invalid ID'], 400);
             }
 
-            $result = $this->stockModel->recordStockCount(
-                $data['item_id'],
-                $data['actual_quantity'],
-                $data['notes'] ?? null,
-                $currentUser['id'] ?? null
-            );
-
-            if ($result['success']) {
-                Response::success([
-                    'difference' => $result['difference']
-                ], $result['message']);
-            } else {
-                Response::error($result['message'], 400);
+            $item = $this->inventoryStockModel->findById((int)$id);
+            if (!$item) {
+                return Response::json(['message' => 'Inventory record not found'], 404);
             }
+
+            $data = $this->getRequestData();
+
+            $rules = [
+                'serial_number' => 'string|max:100',
+                'product_id' => 'numeric',
+                'purchase_id' => 'numeric',
+                'width_inch' => 'numeric',
+                'length_ft' => 'numeric',
+                'cubic_ft' => 'numeric',
+                'buy_rate' => 'numeric',
+                'sell_rate' => 'numeric',
+                'status' => 'string|in:available,sold,reserved,damaged',
+                'qty' => 'numeric'
+            ];
+
+            $errors = Validator::validate($data, $rules);
+            if (!empty($errors)) {
+                return Response::json(['errors' => $errors], 422);
+            }
+
+            // Check unique serial number if changed
+            if (isset($data['serial_number']) && $data['serial_number'] !== $item['serial_number']) {
+                if ($this->inventoryStockModel->exists($data['serial_number'], $id)) {
+                    return Response::json(['message' => 'Serial number already exists'], 409);
+                }
+            }
+
+            // Handle image upload if provided
+            if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
+                $uploadResult = $this->handleImageUpload($_FILES['image']);
+                if ($uploadResult['success']) {
+                    $data['image'] = $uploadResult['path'];
+                    
+                    // Delete old image file
+                    if (!empty($item['image'])) {
+                        $oldImagePath = __DIR__ . '/../../' . $item['image'];
+                        if (file_exists($oldImagePath)) {
+                            @unlink($oldImagePath);
+                        }
+                    }
+                } else {
+                    return Response::json(['message' => $uploadResult['message']], 400);
+                }
+            }
+
+            $success = $this->inventoryStockModel->update((int)$id, $data);
+            if (!$success) {
+                return Response::json(['message' => 'Failed to update record or no changes made'], 400);
+            }
+
+            $updatedRecord = $this->inventoryStockModel->findById((int)$id);
+            return Response::json([
+                'message' => 'Inventory stock record updated successfully',
+                'data' => $updatedRecord
+            ], 200);
+
         } catch (Exception $e) {
-            error_log("Error in recordStockCount: " . $e->getMessage());
-            Response::error('Failed to record stock count: ' . $e->getMessage(), 500);
+            error_log("InventoryStockController::updateStock error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred: ' . $e->getMessage()], 500);
         }
     }
 
     /**
-     * POST /inventory/stock/batch-count - ບັນທຶກການນັບຫຼາຍລາຍການ
+     * DELETE /inventory-stocks/{id}
      */
-    public function recordBatchStockCount() {
+    public function deleteStock($id)
+    {
         try {
-            $currentUser = $this->getCurrentUser();
-            $this->checkAdminPermission($currentUser);
-            
-            $data = json_decode(file_get_contents('php://input'), true);
+            $currentUser = AuthMiddleware::authenticate(['admin', 'manager']);
+            if (!$currentUser) return;
 
-            if (!isset($data['counts']) || !is_array($data['counts'])) {
-                Response::error('Counts array is required', 400);
-                return;
+            if (empty($id) || !is_numeric($id)) {
+                return Response::json(['message' => 'Invalid ID'], 400);
             }
 
-            $result = $this->stockModel->recordBatchStockCount(
-                $data['counts'],
-                $currentUser['id'] ?? null
-            );
-
-            if ($result['success']) {
-                Response::success([
-                    'results' => $result['results']
-                ], $result['message']);
-            } else {
-                Response::error($result['message'], 400);
+            $item = $this->inventoryStockModel->findById((int)$id);
+            if (!$item) {
+                return Response::json(['message' => 'Inventory record not found'], 404);
             }
+
+            $success = $this->inventoryStockModel->delete((int)$id);
+            if (!$success) {
+                return Response::json(['message' => 'Failed to delete record'], 500);
+            }
+
+            // Delete image file from disk
+            if (!empty($item['image'])) {
+                $imagePath = __DIR__ . '/../../' . $item['image'];
+                if (file_exists($imagePath)) {
+                    @unlink($imagePath);
+                }
+            }
+
+            return Response::json(['message' => 'Inventory stock record deleted successfully'], 200);
         } catch (Exception $e) {
-            error_log("Error in recordBatchStockCount: " . $e->getMessage());
-            Response::error('Failed to record batch stock count: ' . $e->getMessage(), 500);
+            error_log("InventoryStockController::deleteStock error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred'], 500);
+        }
+    }
+
+    /**
+     * PATCH /inventory-stocks/{id}/status
+     */
+    public function updateStatus($id)
+    {
+        try {
+            $currentUser = AuthMiddleware::authenticate(['admin', 'manager', 'cashier', 'warehouse_staff']);
+            if (!$currentUser) return;
+
+            if (empty($id) || !is_numeric($id)) {
+                return Response::json(['message' => 'Invalid ID'], 400);
+            }
+
+            $item = $this->inventoryStockModel->findById((int)$id);
+            if (!$item) {
+                return Response::json(['message' => 'Inventory record not found'], 404);
+            }
+
+            $data = $this->getRequestData();
+            if (!isset($data['status'])) {
+                return Response::json(['message' => 'Status field is required'], 400);
+            }
+
+            $allowedStatus = ['available', 'sold', 'reserved', 'damaged'];
+            if (!in_array($data['status'], $allowedStatus)) {
+                return Response::json(['message' => 'Invalid status. Must be: ' . implode(', ', $allowedStatus)], 400);
+            }
+
+            $success = $this->inventoryStockModel->updateStatus((int)$id, $data['status']);
+            if (!$success) {
+                return Response::json(['message' => 'Failed to update status'], 500);
+            }
+
+            return Response::json([
+                'message' => 'Status updated successfully',
+                'id' => (int)$id,
+                'status' => $data['status']
+            ], 200);
+
+        } catch (Exception $e) {
+            error_log("InventoryStockController::updateStatus error: " . $e->getMessage());
+            return Response::json(['message' => 'An error occurred'], 500);
         }
     }
 }
