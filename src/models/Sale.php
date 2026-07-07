@@ -244,6 +244,18 @@ class Sale
                 }
             }
 
+            // 3. Update customer totals if customer_id is provided
+            if (!empty($data['customer_id'])) {
+                require_once __DIR__ . '/Customer.php';
+                $customerModel = new Customer($this->db);
+                
+                $purchaseAmount = (float)$data['grand_total'];
+                $paidAmount = (float)$data['paid_amount'];
+                $dueAmount = (float)$data['due_amount'];
+                
+                $customerModel->updateTotals($data['customer_id'], $purchaseAmount, $paidAmount, $dueAmount);
+            }
+
             $this->db->commit();
             return $saleId;
         } catch (Exception $e) {
@@ -286,6 +298,18 @@ class Sale
                 if (!empty($item['inventory_stock_id'])) {
                     $stockModel->updateStatus($item['inventory_stock_id'], 'available');
                 }
+            }
+
+            // 4. Revert customer stats if customer_id was linked
+            if (!empty($sale['customer_id'])) {
+                require_once __DIR__ . '/Customer.php';
+                $customerModel = new Customer($this->db);
+                
+                $purchaseAmount = -(float)$sale['grand_total'];
+                $paidAmount = -(float)$sale['paid_amount'];
+                $dueAmount = -(float)$sale['due_amount'];
+                
+                $customerModel->updateTotals($sale['customer_id'], $purchaseAmount, $paidAmount, $dueAmount);
             }
 
             $this->db->commit();
