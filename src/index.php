@@ -102,6 +102,8 @@ require_once $basePath . '/models/InventoryStock.php';
 require_once $basePath . '/models/Purchase.php';
 require_once $basePath . '/models/Sale.php';
 require_once $basePath . '/models/Supplier.php';
+require_once $basePath . '/models/Customer.php';
+require_once $basePath . '/controllers/CustomerController.php';
 require_once $basePath . '/controllers/CategoryController.php';
 require_once $basePath . '/controllers/SupplierController.php';
 require_once $basePath . '/controllers/SubCategoryController.php';
@@ -393,6 +395,30 @@ try {
                 } else {
                     $saleController->createSale();
                 }
+            } else {
+                Response::json(['message' => 'Endpoint not found'], 404);
+            }
+            break;
+
+        case 'customers':
+            $customerController = new CustomerController($db);
+            $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+            $limit = isset($_GET['limit']) ? min(1000000, max(1, (int)$_GET['limit'])) : 10;
+
+            if ($method === 'GET') {
+                if ($action === 'dropdown') {
+                    $customerController->getCustomerDropdown();
+                } elseif (is_numeric($action)) {
+                    $customerController->getCustomer((int)$action);
+                } else {
+                    $customerController->listCustomers($page, $limit);
+                }
+            } elseif ($method === 'POST') {
+                $customerController->createCustomer();
+            } elseif ($method === 'PUT' && is_numeric($action)) {
+                $customerController->updateCustomer((int)$action);
+            } elseif ($method === 'DELETE' && is_numeric($action)) {
+                $customerController->deleteCustomer((int)$action);
             } else {
                 Response::json(['message' => 'Endpoint not found'], 404);
             }
